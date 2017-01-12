@@ -1,0 +1,73 @@
+---
+title: 'Causal Inference Models: Asthma and Traffic Pollution'
+output:
+  html_document: default
+  html_notebook: default
+---
+
+General purpose of this project is to try and extend causal inference methods, particularly the counterfactual/potential outcomes framework to non-binary exposures (continous, categorical).
+
+Try out the 'ipw' package.
+
+## Replication of Sheryl's Dissertation Results
+
+Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
+
+```{r}
+library(haven) # library for importing SAS files
+library(tidyverse) # data wrangle package
+
+no2layer <- read_sas("./no2layer.sas7bdat") # summary of NO2
+  
+no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
+colnames(no2layer) <- no2_col_names # assign lowercase col names to df
+
+#head(no2layer) # check out the first 6 lines
+
+okawork <- read_sas("./okawork1.sas7bdat")
+#glimpse(okawork) # 433 variables; not priting
+
+# join okawork with no2layer by okaid
+asthma_df <- okawork %>% full_join(no2layer, by = c("okaid", "xcoord", "ycoord"))
+
+#head(asthma_df)
+# sort column names
+col_names_sorted <- colnames(asthma_df[, order(names(asthma_df))])
+head(col_names_sorted)
+summary(as.factor(asthma_df$sh_11))
+
+```
+
+### Descriptive Statistics
+
+Compared to Sheryl's table 11, my numbers are smaller.
+```{r}
+
+# Table packages don't seem to be working properly. May need to update something
+# load table library
+# library(stargazer) # load table package
+
+xtabs(~asthma + sh_11, asthma_df)
+tab <- xtabs(~asthma + inbuff, asthma_df)
+tab
+prop.table(tab)
+print(tab)
+
+print(summary(tab))
+
+# print(stargazer(tab, type = "html"))
+```
+
+```{r}
+
+# basic logic model
+mod1 <- tidy(glm(asthma ~ inbuff, data = asthma_df, 
+                 family = "binomial"(link = "logit")))
+mod1
+
+
+
+
+```
+
+
