@@ -13,11 +13,12 @@ Try out the 'ipw' package.
 
 Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
 
-```{r}
+```{r import and data wrangle}
 library(haven) # library for importing SAS files
 library(tidyverse) # data wrangle package
 
-no2layer <- read_sas("./no2layer.sas7bdat") # summary of NO2
+no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
+  select(OKAID, NO2)
   
 no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
 colnames(no2layer) <- no2_col_names # assign lowercase col names to df
@@ -28,7 +29,11 @@ okawork <- read_sas("./okawork1.sas7bdat")
 #glimpse(okawork) # 433 variables; not priting
 
 # join okawork with no2layer by okaid
-asthma_df <- okawork %>% full_join(no2layer, by = c("okaid", "xcoord", "ycoord"))
+asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
+  # create ed visit variable from sh_11 var (assuming 1=event)
+  mutate(edvisit = ifelse(sh_11 == 1, 1,
+                   ifelse(sh_11 == 2, 0, NA))) 
+
 
 #head(asthma_df)
 # sort column names
@@ -41,7 +46,7 @@ summary(as.factor(asthma_df$sh_11))
 ### Descriptive Statistics
 
 Compared to Sheryl's table 11, my numbers are smaller.
-```{r}
+```{r descriptive}
 
 # Table packages don't seem to be working properly. May need to update something
 # load table library
@@ -58,16 +63,182 @@ print(summary(tab))
 # print(stargazer(tab, type = "html"))
 ```
 
-```{r}
-
+```{r standard models, message=F}
+# load broom package to get out tidy dataframes from models
+library(broom)
 # basic logic model
 mod1 <- tidy(glm(asthma ~ inbuff, data = asthma_df, 
                  family = "binomial"(link = "logit")))
 mod1
 
 
+# check ed visits
+xtabs(~edvisit, data = asthma_df)
+
+# asthma ed visit mod
+# crude 
+ed_crude <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
+                    family = "binomial"(link = "logit")))
+
+ed_crude
 
 
+
+set.seed(777) # set seed
+# try using bootstrap function in broom
+ed_boot <- asthma_df %>% bootstrap(1000) %>% 
+  do(tidy(glm(edvisit ~ inbuff, ., family = "binomial"(link = "logit"))))
+
+# find CI from bootstrap
+alpha = 0.05
+
+bounds <- ed_boot %>% group_by(term) %>% 
+  summarise(median = quantile(estimate, 0.5), 
+            low = quantile(estimate, alpha/2),
+            high = quantile(estimate, 1- alpha/2))
+
+bounds
+
+
+
+```
+
+```{r marginal structural model}
+
+# Marginal structural model approach ----
+
+# Create unexposed and exposed dataframes
+
+exp_data <- unexp_data <- asthma_df %>% 
+  select(asthma, edvisit, inbuff, no2)
+
+exp_data$inbuff <- 1
+unexp_data$inbuff <- 0
+
+# run standard model again of inbufrf
+mod1 <- glm(edvisit ~ inbuff, data = asthma_df, 
+                 family = "binomial"(link = "logit"))
+summary(mod1)
+
+# updated predicted probability in df where everyone is exposed
+pred_outcome_exp <- predict(mod1, newdata=exp_data, type='response')
+head(pred_outcome_exp)
+
+# updated predicted probability in df where no one is exposed
+pred_outcome_unexp <- predict(mod1, newdata=unexp_data, type='response')
+head(pred_outcome_unexp)
+
+# g-computation estimate (simple substitutions method)
+mean(pred_outcome_exp)
+mean(pred_outcome_unexp)
+
+simple_sub <- mean(pred_outcome_exp - pred_outcome_unexp)
+simple_sub
+
+
+# try to now bootstrap the simple sub method ----
+ed_vis_inbuff <- asthma_df %>% 
+  select(edvisit, inbuff)
+
+# create custom msm function ----
+# using bootstrap funciton in broom, i only need to define dataframe
+# as bootstrap feeds in the randomly sample /w replacement df to use
+# I think eventually I'd like to work in arguments for outcome,
+# exposure
+msm.fun <- function(data, y, a, w){ 
+
+  data <- asthma_df
+  w <- c("male", "white") 
+  y <- "edvisit"
+  a <- "inbuff"
+  
+  # extract row numbers of y, a, and w vectors
+  col_n <- c(match(y, names(data)),
+             match(a, names(data)),
+             match(w, names(data)))
+  
+  df_sample <- data %>% select(col_n)
+  
+  # create new a = 1, a = 0 datasets
+  exp_data <- unexp_data <- df_sample
+  
+  # set all a vals in exposed dataframe to 1
+  exp_data[,2] <- 1
+  # set all a vals in unexp dataframe to 0
+  unexp_data[,2] <- 0
+  
+  # run initial model on reduced df_sample 
+  mod1 <- glm(edvisit ~ inbuff, data = df_sample, 
+                 family = "binomial"(link = "logit"))
+  
+  # updated predicted probability in df where everyone is exposed
+  pred_outcome_exp <- predict(mod1, newdata = exp_data, 
+                              type='response')
+  # updated predicted probability in df where no one is exposed
+  pred_outcome_unexp <- predict(mod1, newdata = unexp_data,
+                                type='response')
+  # g-computation estimate (simple substitutions method)
+  # risk difference
+  risk_diff <- mean(pred_outcome_exp - pred_outcome_unexp)
+  # risk ratio
+  risk_ratio <- mean(pred_outcome_exp)/mean(pred_outcome_unexp) 
+  
+  # return values
+  msm_est <- c(risk_diff, risk_ratio)
+  names(msm_est) <- c("Risk Difference", "Risk Ratio")
+  return(msm_est)
+  
+  } # end function
+
+
+test <- msm.fun(ed_vis_inbuff)
+test
+
+# trying boot with broom bootstrap function (need tidy funciton as well)
+msm_boot <- ed_vis_inbuff %>% 
+  # filter to only variables i'm interested in
+  # random sample with replacement boot
+  bootstrap(1000) %>% 
+  # do formula
+  do(tidy(msm.fun(.))) # call msm formula
+
+
+# find CI from bootstrap
+alpha = 0.05
+
+bounds <- msm_boot %>% group_by(names) %>% 
+  summarise(median = quantile(x, 0.5), 
+            low = quantile(x, alpha/2),
+            high = quantile(x, 1- alpha/2))
+
+bounds
+
+
+
+
+# simple models ----
+# risk diff
+rd_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df, 
+                 family="binomial"(link = "identity")))
+
+rd_95ci <- rd_mod %>% filter(term == "inbuff") %>% 
+  mutate(lower_95 = estimate - (1.96*std.error),
+         upper_95 = estimate + (1.96*std.error)) %>% 
+  select(estimate, lower_95, upper_95)
+
+rd_95ci
+# risk ratio
+rr_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df, 
+                 family="poisson"(link = "log")))
+
+rr_95ci <- rr_mod %>% filter(term == "inbuff") %>% 
+  mutate(lower_95 = estimate - (1.96*std.error),
+         upper_95 = estimate + (1.96*std.error)) %>% 
+  select(estimate, lower_95, upper_95)
+
+exp(rr_95ci)
+
+bounds
 ```
 
 
