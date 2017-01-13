@@ -147,11 +147,27 @@ ed_vis_inbuff <- asthma_df %>%
 # exposure
 msm.fun <- function(data, y, a, w){ 
 
-  data <- asthma_df
-  w <- c("male", "white") 
-  y <- "edvisit"
-  a <- "inbuff"
+  # if no covariate vector supplied
+  if(missing(w)){ 
+  col_n <- c(match(y, names(data)),
+             match(a, names(data)))
   
+  df_sample <- data %>% select(col_n)
+  
+  # create new a = 1, a = 0 datasets
+  exp_data <- unexp_data <- df_sample
+  
+  # set all a vals in exposed dataframe to 1
+  exp_data[,2] <- 1
+  # set all a vals in unexp dataframe to 0
+  unexp_data[,2] <- 0
+  
+  # run initial model on reduced df_sample 
+  mod1 <- glm(as.formula(paste0(y, "~", a)), data = df_sample, 
+          family = "binomial"(link = "logit"))  
+  
+  # else if covariates supplied  
+  } else { # formula to run if covariates present
   # extract row numbers of y, a, and w vectors
   col_n <- c(match(y, names(data)),
              match(a, names(data)),
@@ -168,8 +184,12 @@ msm.fun <- function(data, y, a, w){
   unexp_data[,2] <- 0
   
   # run initial model on reduced df_sample 
-  mod1 <- glm(edvisit ~ inbuff, data = df_sample, 
-                 family = "binomial"(link = "logit"))
+  mod1 <- glm(as.formula(paste0(y, "~", a, "+",  
+          paste(w, collapse = "+"))), data = df_sample, 
+          family = "binomial"(link = "logit"))
+  
+  } # end formula with covariates
+  
   
   # updated predicted probability in df where everyone is exposed
   pred_outcome_exp <- predict(mod1, newdata = exp_data, 
@@ -191,20 +211,20 @@ msm.fun <- function(data, y, a, w){
   } # end function
 
 
-test <- msm.fun(ed_vis_inbuff)
+test <- msm.fun(asthma_df, y = "edvisit", a = "inbuff", w = c("male", "white"))
 test
 
 # trying boot with broom bootstrap function (need tidy funciton as well)
-msm_boot <- ed_vis_inbuff %>% 
+msm_boot <- asthma_df %>% 
   # filter to only variables i'm interested in
   # random sample with replacement boot
   bootstrap(1000) %>% 
   # do formula
-  do(tidy(msm.fun(.))) # call msm formula
+  do(tidy(msm.fun(., y = "edvisit", a = "inbuff", w = c("male", "white")))) # call msm formula
 
 
 # find CI from bootstrap
-alpha = 0.05
+alpha <- 0.05
 
 bounds <- msm_boot %>% group_by(names) %>% 
   summarise(median = quantile(x, 0.5), 
@@ -214,11 +234,9 @@ bounds <- msm_boot %>% group_by(names) %>%
 bounds
 
 
-
-
 # simple models ----
 # risk diff
-rd_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df, 
+rd_mod <- tidy(glm(edvisit ~ inbuff + male + white, data = asthma_df, 
                  family="binomial"(link = "identity")))
 
 rd_95ci <- rd_mod %>% filter(term == "inbuff") %>% 
@@ -226,9 +244,17 @@ rd_95ci <- rd_mod %>% filter(term == "inbuff") %>%
          upper_95 = estimate + (1.96*std.error)) %>% 
   select(estimate, lower_95, upper_95)
 
+rd_mod
 rd_95ci
+
+normal_mod <- glm(edvisit ~ inbuff + male + white, data = asthma_df, 
+                 family="gaussian") 
+summary(normal_mod)
+
+summary(glm(edvisit ~ white, data = asthma_df, family="poisson"(link = "log")))
+
 # risk ratio
-rr_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df, 
+rr_mod <- tidy(glm(edvisit ~ inbuff + white, data = asthma_df, 
                  family="poisson"(link = "log")))
 
 rr_95ci <- rr_mod %>% filter(term == "inbuff") %>% 
@@ -238,7 +264,7 @@ rr_95ci <- rr_mod %>% filter(term == "inbuff") %>%
 
 exp(rr_95ci)
 
-bounds
+
 ```
 
 
