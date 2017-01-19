@@ -5,14 +5,15 @@ date: "January 19, 2017"
 output: html_document
 ---
 
-
 ## Introduction
 
-This markdown file was created to help me further understand key concepts in causal inference statistics to help in our causal inference papers. Recently (December 2016), Oleg Sofrygin created a pretty awesom package called 'simcausal'. Mark van der Laan (creator of the super learner package), and Romain Neugebauer are also authors on this package. This package makes creation of direceted acyclic graphs (DAGs) in a structural equations modeling (SEM) framework easy. Furthermore, it makes the simulation of data that adhere to your desired DAG very easy as well.  
+This markdown file was created to help me further understand key concepts in causal inference statistics to help in our causal inference papers. Recently (December 2016), Oleg Sofrygin created a pretty awesom package called 'simcausal'. Mark van der Laan (creator of the super learner package), and Romain Neugebauer are also authors on this package. This package makes creation of direceted acyclic graphs (DAGs) in a structural equations modeling (SEM) framework easy. Furthermore, it makes the simulation of data that adhere to your desired DAG very easy as well. I think this could eventually be useful for other people, but I'll need to be better about describing DAG theory.
 
 ```{r load libraries}
 library(simcausal)
 ```
+
+## Simple Relationship
 
 Let's start simple. Say you want to determine the effect of binary exposure "X" on binary outcome "Y". Let's create a DAG to show X affecting Y. In DAG terminology, the X and Y variables are sometimes called "nodes". The arrows connecting nodes are called "edges". 
 The simcausal package even easily creates the DAG plot. I'm not familiar on all the plot options yet, so my DAGs may look pretty basic.
@@ -63,18 +64,118 @@ We can also easily simulate data to analyze with the "simcausal" package.
 # to reproduce your data exactly, use the same seed
 d.1_df <-  sim(DAG = d.1, n = 10000, rndseed = 321)
 
+```
+
+Of course we can always calculate our simple 2x2 sample by hand.
+
+```{r hand cals}
+# find cell vals
+xtabs(~X+Y, d.1_df)
+# find odds ratio
+odds_ratio <- (3997/1019)/(3333/1651) 
+se <- sqrt((1/3997) + (1/1019) + (1/3333) + (1/1651))
+lower_bound <- log(odds_ratio) - (se*1.96)
+upper_bound <- log(odds_ratio) + (se*1.96)
+
+names <- c("OR", "95_lower", "95_upper")
+vals <- round(exp(c(log(odds_ratio), lower_bound, upper_bound)), 2)
+or_df <- rbind(names, vals)
+or_df
+
+# find risk difference
+risk_diff <- (3997/(3997+1019)) - (3333/(3333+1651))
+# fill in standard error latter
 
 ```
 
 Let's run a logistic regression on our simulated data to see if it has the properties we expect. I like to use the 'broom' (David Robinson) and 'tidyverse' (Hadley Wickham) to make data manipulation and output easier to read.
 
-```{r}
+```{r xy mod}
 library(broom)
 
 mod1 <- tidy(glm(Y~X, data = d.1_df, family="binomial"(link="logit")))
+# model fits how we defined it
 mod1
 
+# calcualte 95%CI around estimate for X
+estimate <- mod1[2,2]
+lower_bound <- mod1[2,2] - (1.96*mod1[2,3])
+upper_bound <- mod1[2,2] + (1.96*mod1[2,3])
 # Odds ratio for the effect of X on Y
-exp(mod1[2,2])
+names <- c("OR", "95_lower", "95_upper")
+vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, vals)
+or_df
 
 ```
+
+Our simulated data fits our DAG. We may interpret the odds ratio in causal inference language as follows:
+Exposure to X increased the odds of Y by ~2 times. This is consistent with our causal hypothesis of X affecting Y. 
+
+We could also estimate the risk difference in these data using a generalized linear regression model using binomial distribution with identity link.
+
+```{r xy risk diff}
+
+risk_diff_mod <- tidy(glm(Y ~ X, data = d.1_df,family = "binomial"(link="identity")))
+risk_diff_mod
+
+```
+
+Both our generalized linear regression models match what we would calculate by hand.
+
+It's also important to note we could easily hypothesize that Y affects X. And those data may have the exact same relationship with each other.L et's draw a DAG and simulate.
+
+```{r yx dag}
+
+dag2 <- DAG.empty()
+
+# now using a SEM framework of notation, we define the relationship between 
+# each node of the DAG
+dag2 <- dag2 +
+  node("Y", distr = "rcat.b1", prob = c(0.5, 0.5)) +  
+  node("X", distr = "rbern",
+  prob = plogis(0 + 0.69 * Y))
+
+# we now need to set the DAG we just created
+dag2 <- set.DAG(dag2)
+
+# now that this DAG is set, it's easy to plot
+plotDAG(dag2, xjitter = 0, yjitter = 0,
+        edge_attrs = list(width = 2, arrow.width = 2, arrow.size = 0.5),
+        vertex_attrs = list(size = 24, label.cex = 0.8))
+
+df_2 <- sim(DAG = dag2, n = 10000, rndseed = 321)
+
+# odds ratio 
+or_mod <- tidy(glm(X ~ Y, data = df_2, family = "binomial"(link="logit")))
+or_mod
+# calcualte 95%CI around estimate for X
+estimate <- or_mod[2,2]
+lower_bound <- or_mod[2,2] - (1.96*or_mod[2,3])
+upper_bound <- mod1[2,2] + (1.96*or_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, vals)
+or_df
+
+# risk diff
+risk_diff_mod <- tidy(glm(X ~ Y, data = df_2,family = "binomial"(link="identity")))
+risk_diff_mod
+```
+
+
+Notice we get the exact same values in this newly simulated dataframe when we use the same parameters as before. The important lesson here is that statistical models make no distinction of direction of associaiton, and it's up to us as the modeler to build the best possible model we can that is consistent with our hypothesis. 
+
+As Pearl states, common words to express statistical relationships such as correlations or associations make no distinction of the direction of association. In many cases, we may want to use these terms. For exmaple, in the case of cross-sectional analyses. However, since we are talking about 'causal inference', it's important to note that we may say 'X affects/causes Y', but statistically, 'Y affects/causes X' could be just as likely given the data. This is where I think DAGs really help. They help visually represent our assumptions about our statistical model, given how our data were collected, our knowledge of the topic, etc. 
+
+## Confounding Example
+
+One area I believe the area of "causal inference" has really helped epidemiologic reasearch is by simplifying the biases that may be present in data to really just two major biases: confounding bias, and collider bias (selection bias). In a general sense confounding happens when a third variable/factor (which we'll call Z for now) distorts the relationship between our X and Y association. I think the most common definition of confounding used in epidemiology courses today probably goes something like this:
+
+*Confounding between X and Y occurs when there is an association between Z and X, and there is an association between Z and Y.* 
+It may also include this extra piece: *And Z is not on the causal pathway between X and Y.*
+
+However, "causal inference" has a more specific definition:
+*Confounding between X and Y occurs with Z affects X 
+
