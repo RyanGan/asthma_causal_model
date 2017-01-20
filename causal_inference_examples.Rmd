@@ -10,7 +10,9 @@ output: html_document
 This markdown file was created to help me further understand key concepts in causal inference statistics to help in our causal inference papers. Recently (December 2016), Oleg Sofrygin created a pretty awesom package called 'simcausal'. Mark van der Laan (creator of the super learner package), and Romain Neugebauer are also authors on this package. This package makes creation of direceted acyclic graphs (DAGs) in a structural equations modeling (SEM) framework easy. Furthermore, it makes the simulation of data that adhere to your desired DAG very easy as well. I think this could eventually be useful for other people, but I'll need to be better about describing DAG theory.
 
 ```{r load libraries}
-library(simcausal)
+library(simcausal) # simulation of causal structure data
+library(broom) # for easy conversion of model results to dataframes
+library(tidyverse) # data wrangling
 ```
 
 ## Simple Relationship
@@ -91,7 +93,7 @@ risk_diff <- (3997/(3997+1019)) - (3333/(3333+1651))
 Let's run a logistic regression on our simulated data to see if it has the properties we expect. I like to use the 'broom' (David Robinson) and 'tidyverse' (Hadley Wickham) to make data manipulation and output easier to read.
 
 ```{r xy mod}
-library(broom)
+
 
 mod1 <- tidy(glm(Y~X, data = d.1_df, family="binomial"(link="logit")))
 # model fits how we defined it
@@ -152,7 +154,7 @@ or_mod
 # calcualte 95%CI around estimate for X
 estimate <- or_mod[2,2]
 lower_bound <- or_mod[2,2] - (1.96*or_mod[2,3])
-upper_bound <- mod1[2,2] + (1.96*or_mod[2,3])
+upper_bound <- or_mod[2,2] + (1.96*or_mod[2,3])
 # Odds ratio for the effect of X on Y
 names <- c("OR", "95_lower", "95_upper")
 vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
@@ -169,13 +171,158 @@ Notice we get the exact same values in this newly simulated dataframe when we us
 
 As Pearl states, common words to express statistical relationships such as correlations or associations make no distinction of the direction of association. In many cases, we may want to use these terms. For exmaple, in the case of cross-sectional analyses. However, since we are talking about 'causal inference', it's important to note that we may say 'X affects/causes Y', but statistically, 'Y affects/causes X' could be just as likely given the data. This is where I think DAGs really help. They help visually represent our assumptions about our statistical model, given how our data were collected, our knowledge of the topic, etc. 
 
-## Confounding Example
+## Confounding Bias
 
-One area I believe the area of "causal inference" has really helped epidemiologic reasearch is by simplifying the biases that may be present in data to really just two major biases: confounding bias, and collider bias (selection bias). In a general sense confounding happens when a third variable/factor (which we'll call Z for now) distorts the relationship between our X and Y association. I think the most common definition of confounding used in epidemiology courses today probably goes something like this:
+One area I believe the area of "causal inference" has really helped epidemiologic reasearch is by simplifying the biases that may be present in data to really just two major biases: confounding bias, and collider bias (selection bias). In a general sense confounding happens when a third variable/factor (which we'll call C for now) distorts the relationship between our X and Y association. I think the most common definition of confounding used in epidemiology courses today probably goes something like this:
 
-*Confounding between X and Y occurs when there is an association between Z and X, and there is an association between Z and Y.* 
-It may also include this extra piece: *And Z is not on the causal pathway between X and Y.*
+*Confounding between X and Y occurs when there is an association between C and X, and there is an association between C and Y.* 
+It may also include this extra piece: *And C is not on the causal pathway between X and Y.*
 
-However, "causal inference" has a more specific definition:
-*Confounding between X and Y occurs with Z affects X 
+However, "causal inference" has a more specific definition of confounding:
+*Confounding between X and Y occurs when C affects X and C affects Y.*
+
+The DAG would look like this.
+
+```{r confounding dag}
+
+con_dag <- DAG.empty()
+
+# now using a SEM framework of notation, we define the relationship between 
+# each node of the DAG
+con_dag <- con_dag +
+  node("C", distr = "rcat.b1", prob = c(0.5, 0.5)) +
+  node("X", distr = "rbern", prob = plogis(0 + 1.5 * C)) +
+  node("Y", distr = "rbern",
+  prob = plogis(0 + 1.5 * C))
+
+# we now need to set the DAG we just created
+con_dag <- set.DAG(con_dag)
+
+# now that this DAG is set, it's easy to plot
+plotDAG(con_dag, xjitter = 0, yjitter = 0,
+        edge_attrs = list(width = 2, arrow.width = 2, arrow.size = 0.5),
+        vertex_attrs = list(size = 24, label.cex = 0.8))
+```
+
+
+Here is shows the X and Y are d-seperated, conditioned on C. We can see that in our model, where when we adjust for C, we would conclude there is no associatoin between X and Y.
+
+```{r confound control}
+
+c_df <- sim(DAG = con_dag, n = 10000, rndseed = 321)
+
+# unadjusted model
+crude_mod <- tidy(glm(Y ~ X, data = c_df, family = "binomial"(link="logit")))
+
+# calcualte 95%CI around estimate for X
+estimate <- crude_mod[2,2]
+lower_bound <- crude_mod[2,2] - (1.96*crude_mod[2,3])
+upper_bound <- crude_mod[2,2] + (1.96*crude_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+crude_vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, crude_vals)
+or_df
+
+# adjusted odds ratio 
+adj_mod <- tidy(glm(Y ~ X + C, data = c_df, family = "binomial"(link="logit")))
+adj_mod
+# calcualte 95%CI around estimate for X
+estimate <- adj_mod[2,2]
+lower_bound <- adj_mod[2,2] - (1.96*adj_mod[2,3])
+upper_bound <- adj_mod[2,2] + (1.96*adj_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+adj_vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, adj_vals)
+or_df
+
+
+# risk diff
+risk_diff_mod <- tidy(glm(Y ~ X + C, data = c_df,family = "binomial"(link="identity")))
+risk_diff_mod
+
+```
+
+## Collider Bias
+
+The second type of bias that occur within your data is collider bias. For epidemiologists, selection bias is a type of collider bias. A definition of collider bias would be:
+
+*Collider bias occurs when X affects C, and where Y affects C.*
+
+The using the same variables where X is our exposure, Y is our outcome, and C is some third variable that acts as a collider, the DAG would look like this.
+
+
+```{r collider dag}
+
+col_dag <- DAG.empty()
+
+# now using a SEM framework of notation, we define the relationship between 
+# each node of the DAG
+col_dag <- col_dag +
+  node("X", distr = "rcat.b1", prob = c(0.5, 0.5)) +
+  node("Y", distr = "rbern", prob = c(0.6, 0.4)) +
+  node("C", distr = "rbern",
+  prob = plogis(0 + 1.0 * Y + -0.5 *X))
+
+# we now need to set the DAG we just created
+col_dag <- set.DAG(col_dag)
+
+# now that this DAG is set, it's easy to plot
+plotDAG(col_dag, xjitter = 0, yjitter = 0,
+        edge_attrs = list(width = 2, arrow.width = 2, arrow.size = 0.5),
+        vertex_attrs = list(size = 24, label.cex = 0.8))
+```
+
+In this DAG, X and Y are d-seperated, unless we open up the path through collider C. Notice that the arrows leave from both X and Y *into* C. Thus C acts as a collider, opening up the path between X and Y if adjusted for.
+
+```{r true model}
+# make collider dataframe
+col_df <- sim(DAG = col_dag, n = 10000, rndseed = 321) %>% 
+  # need to convert categorical Y to 1 or 0 to use with logistic
+  mutate(Y = ifelse(Y == 1, 1, 0))
+
+# true odds ratio 
+true_mod <- tidy(glm(Y ~ X, data = col_df, family = "binomial"(link="logit")))
+true_mod
+# calcualte 95%CI around estimate for X
+estimate <- true_mod[2,2]
+lower_bound <- true_mod[2,2] - (1.96*true_mod[2,3])
+upper_bound <- true_mod[2,2] + (1.96*true_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+true_vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, true_vals)
+or_df
+
+```
+
+In this case, our 'true' estimates (based on our DAG) show no association between X and Y. Which is also what our DAG shows, as X and Y are d-seperated.
+
+However, what if we mistakenly think C is actually a confounder and decide to adjust for it in our model?
+
+```{r collider model}
+
+# collider odds ratio 
+col_mod <- tidy(glm(Y ~ X + C, data = col_df, family = "binomial"(link="logit")))
+col_mod
+# calcualte 95%CI around estimate for X
+estimate <- col_mod[2,2]
+lower_bound <- col_mod[2,2] - (1.96*col_mod[2,3])
+upper_bound <- col_mod[2,2] + (1.96*col_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+collider_vals <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, collider_vals)
+or_df
+
+```
+
+If we adjust for C in this case, we have introduced collider bias. Our estimate is now biased as well. The lesson is that if the arrows go in to a variable, you may not want to adjust for such a variable. This could include mediating variables, which is a special case of collider bias. If the arrows leave the variable, then it should be adjusted for to control for confounding bias.
+
+*Important reminder is that real data is messy, and these causal structures (DAGs) within data are not always apparent. Its good practice to draw multiple DAGs, test each node arch node in the DAG, and decide which DAG structure is more likely. This is the 'art' of model building, much like backwards or forwards selection, or some other model selection strategy. I prefer DAGs because it makes my assumptions about the questions I'm trying to ask explicit.*
+
+Now what if we have some unmeasured variable or we introduce collider bias on accident? This is where *potential outcomes framework*, a.k.a *counter factual estimation*. There are a couple different methods used commonly in epidemiologic research that fall in to this category: g-computation, a.k.a simple substitution and inverse probability weighting (IPTW). But the general idea behind both these methods is that we have a binary exposure variable, X. Our study subjects are observed to be either exposed (X = 1), or unexposed (X = 0). Each subject can obviously only have one realized value for exposure. That is a subject with exposure X = 1, cannot take on X = 0. However, we often like to think and talk in counterfactual terms. That is, would subjects with exposure X = 1 still have developed disease Y had they, counter to the fact, had exposure X = 0. This is where some old epidemiologic concepts come in handy. Identifiability and exchangability (See Greenland and Robins 1990s?).  
+
+
 
