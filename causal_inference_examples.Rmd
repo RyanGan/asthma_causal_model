@@ -9,7 +9,9 @@ output: html_document
 
 This markdown file was created to help me further understand key concepts in causal inference statistics to help in our causal inference papers. Recently (December 2016), Oleg Sofrygin created a pretty awesom package called 'simcausal'. Mark van der Laan (creator of the super learner package), and Romain Neugebauer are also authors on this package. This package makes creation of direceted acyclic graphs (DAGs) in a structural equations modeling (SEM) framework easy. Furthermore, it makes the simulation of data that adhere to your desired DAG very easy as well. I think this could eventually be useful for other people, but I'll need to be better about describing DAG theory.
 
-```{r load libraries}
+*Disclaimer: Some of my DAG terminology may be off. I plan to come back and improve my discussions.*
+
+```{r load libraries, warning=F, message=F}
 library(simcausal) # simulation of causal structure data
 library(broom) # for easy conversion of model results to dataframes
 library(tidyverse) # data wrangling
@@ -20,7 +22,7 @@ library(tidyverse) # data wrangling
 Let's start simple. Say you want to determine the effect of binary exposure "X" on binary outcome "Y". Let's create a DAG to show X affecting Y. In DAG terminology, the X and Y variables are sometimes called "nodes". The arrows connecting nodes are called "edges". 
 The simcausal package even easily creates the DAG plot. I'm not familiar on all the plot options yet, so my DAGs may look pretty basic.
 
-```{r x y dag}
+```{r x y dag, warning=F, message=F}
 # using 'simcausal' package, first create an empty DAG using the appropriately
 # named DAG.empty function.
 d.1 <- DAG.empty()
@@ -58,7 +60,7 @@ The DAG above shows a relationship between X and Y. In more specific "causal inf
 
 We can also easily simulate data to analyze with the "simcausal" package. 
 
-```{r create data}
+```{r create data, warning=F, message=F}
 # create simulated dataframe of DAG
 # DAG option is the dag you want to simulate
 # n is the sample size we want to simulate. Here we want 10,000 observatoins
@@ -70,7 +72,7 @@ d.1_df <-  sim(DAG = d.1, n = 10000, rndseed = 321)
 
 Of course we can always calculate our simple 2x2 sample by hand.
 
-```{r hand cals}
+```{r hand cals, warning=F, message=F}
 # find cell vals
 xtabs(~X+Y, d.1_df)
 # find odds ratio
@@ -86,13 +88,14 @@ or_df
 
 # find risk difference
 risk_diff <- (3997/(3997+1019)) - (3333/(3333+1651))
+risk_diff
 # fill in standard error latter
 
 ```
 
 Let's run a logistic regression on our simulated data to see if it has the properties we expect. I like to use the 'broom' (David Robinson) and 'tidyverse' (Hadley Wickham) to make data manipulation and output easier to read.
 
-```{r xy mod}
+```{r xy mod, warning=F, message=F}
 
 
 mod1 <- tidy(glm(Y~X, data = d.1_df, family="binomial"(link="logit")))
@@ -116,7 +119,7 @@ Exposure to X increased the odds of Y by ~2 times. This is consistent with our c
 
 We could also estimate the risk difference in these data using a generalized linear regression model using binomial distribution with identity link.
 
-```{r xy risk diff}
+```{r xy risk diff, warning=F, message=F}
 
 risk_diff_mod <- tidy(glm(Y ~ X, data = d.1_df,family = "binomial"(link="identity")))
 risk_diff_mod
@@ -127,7 +130,7 @@ Both our generalized linear regression models match what we would calculate by h
 
 It's also important to note we could easily hypothesize that Y affects X. And those data may have the exact same relationship with each other.L et's draw a DAG and simulate.
 
-```{r yx dag}
+```{r yx dag, warning=F, message=F}
 
 dag2 <- DAG.empty()
 
@@ -183,7 +186,7 @@ However, "causal inference" has a more specific definition of confounding:
 
 The DAG would look like this.
 
-```{r confounding dag}
+```{r confounding dag, warning=F, message=F}
 
 con_dag <- DAG.empty()
 
@@ -207,7 +210,7 @@ plotDAG(con_dag, xjitter = 0, yjitter = 0,
 
 Here is shows the X and Y are d-seperated, conditioned on C. We can see that in our model, where when we adjust for C, we would conclude there is no associatoin between X and Y.
 
-```{r confound control}
+```{r confound control, warning=F, message=F}
 
 c_df <- sim(DAG = con_dag, n = 10000, rndseed = 321)
 
@@ -253,7 +256,7 @@ The second type of bias that occur within your data is collider bias. For epidem
 The using the same variables where X is our exposure, Y is our outcome, and C is some third variable that acts as a collider, the DAG would look like this.
 
 
-```{r collider dag}
+```{r collider dag, warning=F, message=F}
 
 col_dag <- DAG.empty()
 
@@ -276,7 +279,7 @@ plotDAG(col_dag, xjitter = 0, yjitter = 0,
 
 In this DAG, X and Y are d-seperated, unless we open up the path through collider C. Notice that the arrows leave from both X and Y *into* C. Thus C acts as a collider, opening up the path between X and Y if adjusted for.
 
-```{r true model}
+```{r true model, warning=F, message=F}
 # make collider dataframe
 col_df <- sim(DAG = col_dag, n = 10000, rndseed = 321) %>% 
   # need to convert categorical Y to 1 or 0 to use with logistic
@@ -301,7 +304,7 @@ In this case, our 'true' estimates (based on our DAG) show no association betwee
 
 However, what if we mistakenly think C is actually a confounder and decide to adjust for it in our model?
 
-```{r collider model}
+```{r collider model, warning=F, message=F}
 
 # collider odds ratio 
 col_mod <- tidy(glm(Y ~ X + C, data = col_df, family = "binomial"(link="logit")))
@@ -322,7 +325,141 @@ If we adjust for C in this case, we have introduced collider bias. Our estimate 
 
 *Important reminder is that real data is messy, and these causal structures (DAGs) within data are not always apparent. Its good practice to draw multiple DAGs, test each node arch node in the DAG, and decide which DAG structure is more likely. This is the 'art' of model building, much like backwards or forwards selection, or some other model selection strategy. I prefer DAGs because it makes my assumptions about the questions I'm trying to ask explicit.*
 
-Now what if we have some unmeasured variable or we introduce collider bias on accident? This is where *potential outcomes framework*, a.k.a *counter factual estimation*. There are a couple different methods used commonly in epidemiologic research that fall in to this category: g-computation, a.k.a simple substitution and inverse probability weighting (IPTW). But the general idea behind both these methods is that we have a binary exposure variable, X. Our study subjects are observed to be either exposed (X = 1), or unexposed (X = 0). Each subject can obviously only have one realized value for exposure. That is a subject with exposure X = 1, cannot take on X = 0. However, we often like to think and talk in counterfactual terms. That is, would subjects with exposure X = 1 still have developed disease Y had they, counter to the fact, had exposure X = 0. This is where some old epidemiologic concepts come in handy. Identifiability and exchangability (See Greenland and Robins 1990s?).  
+Now what if we have a more complicated structure? Or we introduce collider bias on accident? Let's take a look at the classic M-bias example. I still don't know how or if you can control the locations of the nodes, so this DAG looks more like a star and not an M.
+
+```{r m bias dag, warning = F, message = F}
+m_dag <- DAG.empty()
+
+# now using a SEM framework of notation, we define the relationship between 
+# each node of the DAG
+m_dag <- m_dag +
+  node("C1", distr = "rbern", prob = c(0.5, 0.5)) +
+  node("C2", distr = "rbern", prob = c(0.6, 0.4)) +
+  node("M", distr = "rbern", prob = plogis(0 + 1.75 * C1 + 1.75 * C2)) +
+  node("X", distr = "rbern",prob = plogis(0 + 2.5 * C1 + 3.5 * M)) +
+  node("Y", distr = "rbern", prob = plogis(0 + 2.5 * C2 +3.5 * M))
+
+# we now need to set the DAG we just created
+m_dag <- set.DAG(m_dag)
+
+# simulate m-dag data
+m_df <- sim(DAG = m_dag, n = 100000, rndseed = 321)
+
+# now that this DAG is set, it's easy to plot
+plotDAG(m_dag, xjitter = 0, yjitter = 0,
+        edge_attrs = list(width = 2, arrow.width = 2, arrow.size = 0.5),
+        vertex_attrs = list(size = 24, label.cex = 0.8))
+
+```
 
 
+In the classic M bias paper (which I promise to cite), the question is asked, given the DAG, which variables need to be adjusted for in order to get the 'true' association between X and Y. The DAG shows M acting not only as a confounder on the association of X and Y, but also a collider in that while you may adjust for M, it would open up a colliding path between C1 and C2 that now both confound the association between X and Y. Only by adjusting for C1, C2, and M do we close all biasing paths.
 
+We can see in our unadjusted model, that we might conclude falsely that there is an associatoin between X and Y.
+
+```{r m bias model, warning = F, message = F}
+
+
+m_mod <- tidy(glm(Y ~ X, m_df, family = "binomial"(link="logit")))
+m_mod
+
+# calcualte 95%CI around estimate for X
+estimate <- m_mod[2,2]
+lower_bound <- m_mod[2,2] - (1.96*m_mod[2,3])
+upper_bound <- m_mod[2,2] + (1.96*m_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+X <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, X)
+or_df
+
+```
+
+If we adjust for just C1, we can see that this may be insufficient to account for all biasing paths as we would still conclude a significant association between X and Y.
+
+```{r m bias adj C1 model, warning = F, message = F}
+
+m_mod <- tidy(glm(Y ~ X + C1, m_df, family = "binomial"(link="logit")))
+m_mod
+# calcualte 95%CI around estimate for X
+estimate <- m_mod[2,2]
+lower_bound <- m_mod[2,2] - (1.96*m_mod[2,3])
+upper_bound <- m_mod[2,2] + (1.96*m_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+X <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, X)
+or_df
+
+```
+
+Again, even though we adjust for C1 and C2 now, we would still conclude there is an associatoin between X and Y.
+
+```{r m bias adj C1 C2 model, warning = F, message = F}
+
+m_mod <- tidy(glm(Y ~ X + C1 + C2, m_df, family = "binomial"(link="logit")))
+m_mod
+# calcualte 95%CI around estimate for X
+estimate <- m_mod[2,2]
+lower_bound <- m_mod[2,2] - (1.96*m_mod[2,3])
+upper_bound <- m_mod[2,2] + (1.96*m_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+X <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, X)
+or_df
+
+```
+
+
+Only by adjusting for C1, C2, and M do we close all biasing paths between X and Y, thereby creating d-seperation between X and Y. 
+
+```{r m bias adj C1 C2 M model, warning = F, message = F}
+
+m_mod <- tidy(glm(Y ~ X + C1 + C2 + M, m_df, family = "binomial"(link="logit")))
+m_mod
+# calcualte 95%CI around estimate for X
+estimate <- m_mod[2,2]
+lower_bound <- m_mod[2,2] - (1.96*m_mod[2,3])
+upper_bound <- m_mod[2,2] + (1.96*m_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+X <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, X)
+or_df
+
+```
+
+The M-bias DAG shows that there should be no associatoin between X and Y. However, in order for X and Y to be  d-seperated, we must adjust for C1, C2, and M. I'll add the citation for the M bias paper in here too. Also notice that I had to  make some really strong associations between the confounders (C1, C2), collider (M, e.g for associatoin between C1 and M, beta of 1.75 is really an OR of 5.75) and Y in order to make this example work. Anyone that's worked with real data knows that rarely will you see associations this strong. 
+
+The argument made by Greenland in his collider bias paper was that only by adjusting for C1, C2, and M, can the paths be closed, giving us the 'true' association. However, what if we just adjust for M only?
+
+```{r, m bias adj M model, warning = F, message = F}
+
+m_mod <- tidy(glm(Y ~ X + M, m_df, family = "binomial"(link="logit")))
+m_mod
+# calcualte 95%CI around estimate for X
+estimate <- m_mod[2,2]
+lower_bound <- m_mod[2,2] - (1.96*m_mod[2,3])
+upper_bound <- m_mod[2,2] + (1.96*m_mod[2,3])
+# Odds ratio for the effect of X on Y
+names <- c("OR", "95_lower", "95_upper")
+X <- round(exp(c(estimate, lower_bound, upper_bound)), 2)
+or_df <- rbind(names, X)
+or_df
+
+```
+
+Heck, we get almost the exact same answer. Who has ever been asked this question and said you may just adjust for M and that would be good enough? I have :). I was also told I was 'wrong' because you need to adjust for C1 and C2 also. I argue based on modeling these simulate data that adjusting for M would be good enough. Even when the sample size is really large (here I made it one million) and if unrealistically strong associations were simulated, adjusting for M was still enough. 
+
+If anyone can create a scenario where we would miss the 'true' answer without fully adjusting for not only M, but C1 and C2 please let me know because adjusting for M always seemed to be enough. It's possible that perhaps if the variables were continous rather than binary, then it would be necissary to adjust for C1, C2, and not just M.
+
+The lesson often told to us when we are taught DAGs is that only be identifying and accounting for all biasing paths in a complex DAG like this one, will we be able to arrive at a 'true' answer. The lesson I've learned from playing around with simmulated data of known causal structures is that  may suggest that often a simple DAG is sufficient to convey the most important biasing paths in your data.
+
+## Things I'd like to do in the future
+
+1. Show how matching in a case-control study increases efficiency, and how you can use the matchit package to quickly find controls.
+
+2. Show how to perform mediation analyses.
+
+3. Marginal sturctural models and inverse probability of treatment weight models. And finally see if these types of models can be used on continous/categorical data.
