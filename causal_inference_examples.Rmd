@@ -434,7 +434,7 @@ The M-bias DAG shows that there should be no associatoin between X and Y. Howeve
 
 The argument made by Greenland in his collider bias paper was that only by adjusting for C1, C2, and M, can the paths be closed, giving us the 'true' association. However, what if we just adjust for M only?
 
-```{r, m bias adj M model, warning = F, message = F}
+```{r m bias adj M model, warning = F, message = F}
 
 m_mod <- tidy(glm(Y ~ X + M, m_df, family = "binomial"(link="logit")))
 m_mod

@@ -46,6 +46,7 @@ summary(as.factor(asthma_df$sh_11))
 ### Descriptive Statistics
 
 Compared to Sheryl's table 11, my numbers are smaller.
+
 ```{r descriptive}
 
 # Table packages don't seem to be working properly. May need to update something
