@@ -1,0 +1,67 @@
+---
+title: "SuperLearner Vignette"
+author: "Ryan_Gan"
+date: "April 14, 2017"
+output: html_document
+---
+
+## Purpose
+
+Running through the SuperLearner Vignette to learn a bit about ensemble methods.
+
+```{r libraries, echo = F}
+library(SuperLearner)
+library(glmnet)
+library(kernlab)
+library(KernelKnn)
+```
+
+Load the Boston housing data from MASS package.
+
+```{r boston data, echo = F}
+# load boston data
+data(Boston, package ="MASS")
+# print out first 6 rows
+head(Boston)
+```
+
+Setting up SuperLearner.
+
+```{r sl setup, echo = F}
+# standard prediction model
+
+set.seed(1)
+
+sl_lib = c("SL.xgboost", "SL.randomForest", "SL.glmnet", "SL.nnet")
+           # "SL.ksvm", "SL.bartMachine", "SL.kernelKnn",
+           # "SL.rpartPrune", "SL.lm", "SL.mean")
+
+# Fit XGBoost, RF, Lasso, Neural Net, SVM, BART, K-nearest neighbors, Decision Tree, 
+# OLS, and simple mean; create automatic ensemble.
+result = SuperLearner(Y = Boston$medv, X = Boston[, -14], SL.library = sl_lib)
+
+# Review performance of each algorithm and ensemble weights.
+result
+str(result)
+
+# Use external (aka nested) cross-validation to estimate ensemble accuracy.
+# This will take a while to run.
+result2 = CV.SuperLearner(Y = Boston$medv, X = Boston[, -14], SL.library = sl_lib)
+result2
+# Plot performance of individual algorithms and compare to the ensemble.
+plot(result2) + theme_minimal()
+
+# Hyperparameter optimization --
+# Fit elastic net with 5 different alphas: 0, 0.2, 0.4, 0.6, 0.8, 1.0.
+# 0 corresponds to ridge and 1 to lasso.
+enet = create.Learner("SL.glmnet", detailed_names = T,
+                      tune = list(alpha = seq(0, 1, length.out = 5)))
+
+sl_lib2 = c("SL.mean", "SL.lm", enet$names)
+
+enet_sl = SuperLearner(Y = Boston$medv, X = Boston[, -14], SL.library = sl_lib2)
+
+# Identify the best-performing alpha value or use the automatic ensemble.
+enet_sl
+
+```

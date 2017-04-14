@@ -97,7 +97,6 @@ Let's run a logistic regression on our simulated data to see if it has the prope
 
 ```{r xy mod, warning=F, message=F}
 
-
 mod1 <- tidy(glm(Y~X, data = d.1_df, family="binomial"(link="logit")))
 # model fits how we defined it
 mod1
