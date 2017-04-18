@@ -1,0 +1,83 @@
+---
+title: "Reproducing Results in Snowden G-Comp Paper"
+author: "Ryan_Gan"
+date: "April 18, 2017"
+output: html_document
+---
+
+Using code from Snowden paper to try out MSM models and maybe test out SuperLearner and Target Maximum Likelihood packages.
+
+```{r libraries}
+library(tidyverse)
+library(broom)
+```
+
+```{r simulate data}
+# sample size
+n <- 300
+set.seed(285)
+simdata <- data.frame(W1 = rbinom(n, 1, 0.4), W2 = rbinom(n, 1, 0.5))
+# add simulated data of A
+simdata <- transform(simdata, A = rbinom(n, 1, (0.5+0.2*W1-0.3*W2)))
+# add simulated data of Y
+simdata <- transform(simdata, Y = rnorm(n, (3-0.5*A+W1+0.3*A*W2), 0.4))
+
+# create counterfactual datasets 
+# A = 0
+simdata_a0 <- transform(simdata, A = 0)
+# A = 1
+simdata_a1 <- transform(simdata, A = 1)
+```
+
+
+Paper goes in to various model fits and how MSM estimates. First step of a marginal structral model is to define the I'm just going to go to example 4 where the appropriate interaction between A and W2 is specified.
+
+```{r Q formula correct specification of data structure}
+# Step 1: Define Q formula
+reg_mod <- glm(Y~A+W1+A:W2, data = simdata, family = gaussian)
+summary(reg_mod)
+```
+
+Now performing Marignal Structural Model via G-computation (simple substitution). Next we need to update the predicted FEV1 values where everyone is exposed and no one is exposed.
+
+```{r predicted outcome a1 and a0}
+# values of everyone exposed
+pr_fev_a1 <- predict(reg_mod, newdata = simdata_a1)
+# values of no one exposed
+pr_fev_a0 <- predict(reg_mod, newdata = simdata_a0)
+# MSM value
+fev_est <- pr_fev_a1 - pr_fev_a0
+mean(fev_est)
+
+# create a g-comp function
+g_comp_func <- function(data, y, a, q_mod, mod_family){
+  # create a = 1 and a = 0 dataframes
+  a1_df <- a0_df <- data
+  a1_df[, a] <- 1
+  a0_df[, a] <- 0
+  # run q-formula
+  model <- glm(as.formula(paste(y, q_mod, sep = "~")), data = data, family = mod_family)
+  # calculate mean expected in a1 and a0
+  pr_a1 <- mean(predict(model, newdata = a1_df))
+  pr_a0 <- mean(predict(model, newdata = a0_df))
+  # take difference 
+  msm_diff <- pr_a1 - pr_a0
+  print(msm_diff)
+  # take ratio if not gaussian
+  if(mod_family != "gaussian"){
+  msm_ratio <- pr_a1/pr_a0 
+  print(msm_ratio)
+  }
+  
+}
+
+g_comp_func(data = simdata, y = "Y", a = "A", q_mod = "A+W1+A:W2",
+            mod_family = "gaussian")
+
+# percentile method with broom
+boot_msm <- simdata %>% boot(100) %>% 
+  do(tidy)
+
+
+
+```
