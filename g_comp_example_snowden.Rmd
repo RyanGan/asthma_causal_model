@@ -11,6 +11,7 @@ Using code from Snowden paper to try out MSM models and maybe test out SuperLear
 library(tidyverse)
 library(broom)
 library(SuperLearner)
+library(tmle)
 ```
 
 Simulating data as defined in the paper. Paper goes in to various model fits and how MSM estimates. First step of a marginal structral model is to define the I'm just going to go to example 4 where the appropriate interaction between A and W2 is specified.
@@ -386,9 +387,7 @@ msm_fev
 
 Trying out the tmle package.
 
-```{r tmle lib}
-library(tmle)
-
+```{r tmle package}
 tmle_package_result <- tmle(Y = simdata$Y, A = simdata$A, 
                             W = subset(simdata, select = -c(A,Y)))
 tmle_package_result
