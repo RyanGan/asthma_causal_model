@@ -160,6 +160,8 @@ summary(prop_mod)
 
 Multi-step process of creating weights for the probability of being exposed. We also check for ETA violations here where, given the covariates W, probability of exposed or unexposed might be >.90.
 
+IPTW requires the assumption of positivity or experimental treatment assignment where the observed treatment levels vary within confounder strata. Positivity violations occur when certain subgroups in a sample rarely or never receive some treatments of interest. The resulting sparsity in the data may increase bias with or without an increase in variance and can threaten valid inference. 
+
 ```{r iptw step 2}
 # vector of propensity exposed for each observation
 prob_exposed <- predict(prop_mod, type = "response")
@@ -184,3 +186,81 @@ iptw <- mean(as.numeric(simdata$A==1)*wt*simdata$Y) -
 
 iptw
 ```
+
+Creating IPTW funciton to run through bootstrap.
+
+```{r iptw function}
+# inverse probability of treatment weighting function
+iptw_func <- function(data, y, a, w, estimate){
+  # step 1: estimate propensity of treatment ----
+    prop_mod <- glm(as.formula(paste(a, w, sep = "~")), data = data, 
+                    family = "binomial")
+  # step 2: estimate weights ----
+    # vector of propensity exposed for each observation
+    prob_exposed <- predict(prop_mod, type = "response")
+    # vector of propensity not exposed
+    prob_unexposed <- 1 - prob_exposed 
+    
+    # note: 4/20/17 can't quite figure out how to include a plot and value
+    # histogram to check for ETA violation 
+    # if(eta_plot == "yes"){ # plot probability of exposed
+    # eta_fig <- hist(prob_exposed)
+    #   }
+
+  # create weights
+    wt <- as.numeric(data[,a]==1)/prob_exposed + 
+          as.numeric(data[,a]==0)/prob_unexposed
+    
+  # calculate desired estimates "diff", "ratio", "both" ----
+    # calculate mean estimate
+    a1_est <- mean(as.numeric(data[,a]==1)*as.numeric(wt)*as.numeric(unlist(data[,y])))
+    a0_est <-  mean(as.numeric(data[,a]==0)*as.numeric(wt)*as.numeric(unlist(data[,y])))
+    # calculate difference a1 to a0
+    if(estimate == "diff"){
+      iptw_diff <- a1_est - a0_est
+      iptw_val <- iptw_diff
+    }
+    # calculate ratio of a1/a0
+    if(estimate == "ratio"){
+      iptw_ratio <- a1_est - a0_est
+      iptw_val <- iptw_ratio
+    } 
+    # output a list of figure and value
+    #iptw_out <- list(eta_fig, iptw_val)
+    return(iptw_val)
+} # end function 
+
+```
+
+Testing function. You can see that IPTW is slightly biased compared to the g-computation approach because it doesn't account for the interaction between A and W2 without the baseterm W2.
+
+```{r testing iptw function}
+meow2 <- iptw_func(data=simdata, y="Y", a="A", w="W1+W2", estimate="diff")
+meow2
+```
+
+```{r iptw boot}
+# percentile method with broom
+set.seed(321)
+boot_iptw <- simdata %>% bootstrap(1000) %>% 
+  do(tidy(iptw_func(data=., y="Y", a="A", w="W1+W2", estimate="diff")))
+
+# create empty matrix
+estimates <- matrix(nrow = 1, ncol = 4, byrow = T)
+colnames(estimates) <- c("iptw_estimate", "boot_median", "lower_95", "upper_95")
+
+# fill matrix 
+estimates[,1] <- round(meow2,3)
+estimates[,2] <- round(quantile(boot_iptw$x, 0.5),3)
+estimates[,3] <- round(quantile(boot_iptw$x, 0.025),3)
+estimates[,4] <- round(quantile(boot_iptw$x, 0.975),3)
+
+# convert matrix to dataframe
+est_df <- data.frame(estimates)
+
+knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
+```
+
+## Targeted Maximum Likelihood
+
+This is a doubly robust estimation method that uses ensemble machine learning (via SuperLearner) to estimate both the Q function and treatment propensity. If even one of these  
