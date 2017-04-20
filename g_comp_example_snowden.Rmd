@@ -10,6 +10,7 @@ Using code from Snowden paper to try out MSM models and maybe test out SuperLear
 ```{r libraries}
 library(tidyverse)
 library(broom)
+library(SuperLearner)
 ```
 
 Simulating data as defined in the paper. Paper goes in to various model fits and how MSM estimates. First step of a marginal structral model is to define the I'm just going to go to example 4 where the appropriate interaction between A and W2 is specified.
@@ -261,6 +262,137 @@ est_df <- data.frame(estimates)
 knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
 ```
 
-## Targeted Maximum Likelihood
+## Targeted Maximum Likelihood Substitution 
 
 This is a doubly robust estimation method that uses ensemble machine learning (via SuperLearner) to estimate both the Q function and treatment propensity. If even one of these  
+
+*Step 1: Estimate E(Y|A,W) using ensemble machine learning*
+
+```{r tmle q mod}
+# register superlearner library
+sl_lib <- c("SL.glm", "SL.glm.interaction", "SL.gam")
+
+# estimate FEV/Y given the covariates
+sl_outcome_reg <- SuperLearner(Y=simdata$Y, X=subset(simdata, select = -Y),
+                    SL.library = sl_lib, family = "gaussian")
+# output of superlearner predictive algorithm
+sl_outcome_reg
+```
+
+SuperLearner is an esemble method that weights each machine learning algorithm used. The lower the risk, the better. The Coef variable shows the weight each model is contributing to the overall ensemble. GLM interaction contributes the most weight. We'd kind of hope that since we have that weird interaction between A and W2 without base contribution of W2.
+
+Now that we have esemble formula (which is hidden to my knowledge) to predict Y, we can updated our data.
+
+*Step 2. Use SuperLearner to estimate y where everyone is exposed and no one is exposed*
+
+```{r sl predict exp and unexp}
+# use predict function to obtain initial estimates of the expected outcome given the
+# observed exposure and covariates En(Y|A,W)
+expected_y_obsexp <- predict(sl_outcome_reg, newdata=simdata)$pred
+
+# like g-computation, we can also update the predicted probability where everyone is exposed
+expected_y_a1 <- predict(sl_outcome_reg, newdata=simdata_a1)$pred
+# and where no one is exposed
+expected_y_a0 <- predict(sl_outcome_reg, newdata=simdata_a0)$pred
+
+head(cbind(simdata, expected_y_obsexp, expected_y_a1, expected_y_a0))
+
+```
+
+*Step 3. Estimate MSM*
+
+```{r sl msm}
+fev_msm_sl <- mean(expected_y_a1) - mean(expected_y_a0)
+fev_msm_sl
+```
+
+Not bad for a machine. You can always add more machine learning methods and add crossvalidation to the ensemble, but that would increase computation time by quite a bit.
+
+## Doubly Robust Method
+
+This method also uses a machine learning ensemble method (SuperLearner) to not only predict the optimal Q model, but also the propensity of treatment model. This method has the advantage of being doubly robust, where if either the Q model or propensity of treatment model is correct, we will produce unbiased results. 
+
+*Steps 1. Same as TMLE substitution method where we define the Q model*
+
+I'm not going to go over this again since we just did this.
+
+*Step 2. Estimate propensity score using ensemble method*
+
+We follow a similar method to the IPTW framework, but now we can create a 'clever covariate'. For exposed subjects, the clever covariate is 1 over the predicted probability of being exposed, given baseline covariates. For unexposed subjects, the clever covariate is -1 over the predicted probablity of not being exposed, given the baseline covariates.
+
+```{r sl pscore}
+# estimate propensity score
+sl_pscore <- SuperLearner(Y=simdata$A, X=subset(simdata, select = -c(A,Y)),
+                  SL.library = sl_lib, family = "binomial")
+sl_pscore
+
+# predicted probability of beind exposed given baseline covariates
+expected_a1 <- sl_pscore$SL.predict
+# predicted probability of being unexposed given baseline covariates
+expected_a0 <- 1 - expected_a1
+
+# creation of clever covariate.
+clever_cov <- as.numeric(simdata$A==1)/expected_a1 -
+              as.numeric(simdata$A==0)/expected_a0
+
+# check to make sure clever covariate works
+clev_cov_a1 <- 1/expected_a1
+clev_cov_a0 <- -1/expected_a0
+
+head(data.frame(simdata$A, clever_cov, clev_cov_a1, clev_cov_a0))
+```
+
+*Step 3. Target intial estimator*
+
+Here we update the intial Q model with the clever covariate as an offset and supress the intercept.
+
+```{r tmle step 3}
+# offset needs to be qlogis for binary 
+# normal might not need anything since it's identity link?
+fev_mod_update <- glm(simdata$Y ~ -1 + offset(expected_y_obsexp) + 
+                        clever_cov, family = "gaussian")
+
+summary(fev_mod_update)
+
+# the clever covariate estimate on Y will become epsilon
+epsilon <- fev_mod_update$coefficients
+epsilon
+
+summary(glm(simdata$Y ~ clever_cov, family = "gaussian"))
+
+pnorm(expected_y_obsexp)
+
+# estimated Y|A=1, W and Y|A=0, W
+tmle_y_a1 <- expected_y_a1+epsilon*clev_cov_a1
+tmle_y_a0 <- expected_y_a0+epsilon*clev_cov_a0
+```
+
+*Step 4. Substitute the updated fits into the target parameter*
+
+```{r tmle step 4}
+tmle_est <- mean(tmle_y_a1) - mean(tmle_y_a0)
+tmle_est
+```
+
+### Comparison of all MSM estimate methods
+
+```{r comparsion}
+msm_fev <- cbind(meow, meow2, fev_msm_sl, tmle_est)
+
+msm_fev
+```
+
+### TMLE Package
+
+Trying out the tmle package.
+
+```{r tmle lib}
+library(tmle)
+
+tmle_package_result <- tmle(Y = simdata$Y, A = simdata$A, 
+                            W = subset(simdata, select = -c(A,Y)))
+tmle_package_result
+
+```
+
+Wow. This was much faster and produced 95% CIs. Not even sure if it bootstrapped... Need to take a look at package description in J of Stats Software.
