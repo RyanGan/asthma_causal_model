@@ -5,9 +5,8 @@ output:
   html_notebook: default
 ---
 
-General purpose of this project is to try and extend causal inference methods, particularly the counterfactual/potential outcomes framework to non-binary exposures (continous, categorical).
+General purpose of this project is to try and estimate an MSM that doesn't have an ETA violation.
 
-Try out the 'ipw' package.
 
 ## Replication of Sheryl's Dissertation Results
 
@@ -35,7 +34,7 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
                    ifelse(sh_11 == 2, 0, NA))) 
 
 
-#head(asthma_df)
+# head(asthma_df)
 # sort column names
 col_names_sorted <- colnames(asthma_df[, order(names(asthma_df))])
 head(col_names_sorted)
@@ -48,11 +47,6 @@ summary(as.factor(asthma_df$sh_11))
 Compared to Sheryl's table 11, my numbers are smaller.
 
 ```{r descriptive}
-
-# Table packages don't seem to be working properly. May need to update something
-# load table library
-# library(stargazer) # load table package
-
 xtabs(~asthma + sh_11, asthma_df)
 tab <- xtabs(~asthma + inbuff, asthma_df)
 tab
@@ -60,8 +54,6 @@ prop.table(tab)
 print(tab)
 
 print(summary(tab))
-
-# print(stargazer(tab, type = "html"))
 ```
 
 ```{r standard models, message=F}

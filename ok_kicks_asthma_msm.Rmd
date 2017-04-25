@@ -1,0 +1,59 @@
+---
+title: "Okland Kicks Asthma MSM"
+author: "Ryan_Gan"
+date: "April 25, 2017"
+output: html_document
+---
+
+## Marginal Structural Model
+
+General purpose of this project is to try and estimate an MSM that doesn't have an ETA violation.
+
+## Replication of Sheryl's Dissertation Results
+
+Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
+
+```{r library setup}
+library(haven) # library for importing SAS files
+library(tidyverse) # data wrangle package
+library(tmle)
+library(SuperLearner)
+```
+
+```{r import and data wrangle}
+
+
+no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
+  select(OKAID, NO2)
+  
+no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
+colnames(no2layer) <- no2_col_names # assign lowercase col names to df
+
+#head(no2layer) # check out the first 6 lines
+
+okawork <- read_sas("./okawork1.sas7bdat")
+#glimpse(okawork) # 433 variables; not priting
+
+# join okawork with no2layer by okaid
+asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
+  # create ed visit variable from sh_11 var (assuming 1=event)
+  mutate(edvisit = ifelse(sh_11 == 1, 1,
+                   ifelse(sh_11 == 2, 0, NA))) %>% 
+  # filter out missing edvisits
+  filter(!is.na(edvisit))
+
+```
+
+Calculating some of the descriptive tables in Sheryl's dissertation.
+
+```{r descriptives}
+xtabs(~ edvisit, data = asthma_df)
+```
+
+```{r standard estimates}
+# asthma ed visit mod
+# crude 
+ed_crude <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
+                    family = "binomial"(link = "logit")))
+ed_crude
+```
