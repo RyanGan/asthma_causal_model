@@ -16,13 +16,12 @@ Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
 ```{r library setup}
 library(haven) # library for importing SAS files
 library(tidyverse) # data wrangle package
+library(broom)
 library(tmle)
 library(SuperLearner)
 ```
 
 ```{r import and data wrangle}
-
-
 no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
   select(OKAID, NO2)
   
@@ -40,20 +39,39 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
   mutate(edvisit = ifelse(sh_11 == 1, 1,
                    ifelse(sh_11 == 2, 0, NA))) %>% 
   # filter out missing edvisits
-  filter(!is.na(edvisit))
+  filter(!is.na(edvisit)) %>%
+  # filter to prevalent asthma cases
+  select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50, pctlata,
+         ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
+         regcomm, commcomr, urbanres)
+# in Sheryl's SAS code, she has regcomm_perc but I could not find it, so using
+# regcomm for now.
 
 ```
 
 Calculating some of the descriptive tables in Sheryl's dissertation.
 
 ```{r descriptives}
-xtabs(~ edvisit, data = asthma_df)
+xtabs(~ asthma + edvisit, data = asthma_df)
+xtabs(~ inbuff + asthma, data = asthma_df)
+
 ```
 
-```{r standard estimates}
-# asthma ed visit mod
+```{r prev asthma standard estimates}
+# prevalent asthma 
 # crude 
-ed_crude <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
+crude_mod <- tidy(glm(asthma ~ inbuff, data = asthma_df,
                     family = "binomial"(link = "logit")))
-ed_crude
+crude_mod
+
+adj_mod <- tidy(glm(asthma ~ inbuff + mfi_t + adengonly + eslgood + 
+          piprlt50 + pctlata + ph75_100k + pctutilinc + pctotown + pctnofuel + 
+          kidspanengg + pkgt6sp1 + regcomm + commcomr + urbanres, 
+          data = asthma_df, family = "binomial"(link="logit")))
+
+adj_mod
 ```
+
+### TMLE
+
+Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the dataframes I have.
