@@ -19,6 +19,7 @@ library(tidyverse) # data wrangle package
 library(broom)
 library(tmle)
 library(SuperLearner)
+library(MASS)
 ```
 
 ```{r import and data wrangle}
@@ -43,7 +44,8 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
   # filter to prevalent asthma cases
   select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50, pctlata,
          ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
-         regcomm, commcomr, urbanres)
+         regcomm, commcomr, urbanres) %>% 
+  filter(asthma == 1)
 # in Sheryl's SAS code, she has regcomm_perc but I could not find it, so using
 # regcomm for now.
 
@@ -52,26 +54,47 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
 Calculating some of the descriptive tables in Sheryl's dissertation.
 
 ```{r descriptives}
-xtabs(~ asthma + edvisit, data = asthma_df)
-xtabs(~ inbuff + asthma, data = asthma_df)
+xtabs(~ edvisit + inbuff, data = asthma_df)
 
 ```
 
 ```{r prev asthma standard estimates}
 # prevalent asthma 
-# crude 
-crude_mod <- tidy(glm(asthma ~ inbuff, data = asthma_df,
+# crude model
+crude_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
                     family = "binomial"(link = "logit")))
-crude_mod
 
-adj_mod <- tidy(glm(asthma ~ inbuff + mfi_t + adengonly + eslgood + 
+# crude odds ratio and 95%CI
+vals <- round(exp(c(crude_mod[2,2], crude_mod[2,2]-1.96*crude_mod[2,3], 
+      crude_mod[2,2]+1.96*crude_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
+
+
+# adjusted model
+adj_mod <- tidy(glm(edvisit ~ inbuff + mfi_t + adengonly + eslgood + 
           piprlt50 + pctlata + ph75_100k + pctutilinc + pctotown + pctnofuel + 
           kidspanengg + pkgt6sp1 + regcomm + commcomr + urbanres, 
           data = asthma_df, family = "binomial"(link="logit")))
 
-adj_mod
+# adjusted odds ratio and 95%CI
+vals <- round(exp(c(adj_mod[2,2], adj_mod[2,2]-1.96*adj_mod[2,3], 
+      adj_mod[2,2]+1.96*adj_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
 ```
 
 ### TMLE
 
 Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the dataframes I have.
+
+```{r tmle msm}
+tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff, 
+                 W = subset(asthma_df, select = -c(edvisit, inbuff, asthma)),
+                 Q.SL.library = c("SL.nnet", "SL.glm", "SL.randomForest", "SL.step",
+                                  "SL.glm.interaction"), 
+                 g.SL.library = c("SL.nnet", "SL.glm", "SL.randomForest", "SL.step",
+                                  "SL.glm.interaction"), 
+                 family = "binomial")
+tmle_mod
+```
+
+
