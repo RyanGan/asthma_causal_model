@@ -224,7 +224,7 @@ iptw_func <- function(data, y, a, w, estimate){
     }
     # calculate ratio of a1/a0
     if(estimate == "ratio"){
-      iptw_ratio <- a1_est - a0_est
+      iptw_ratio <- a1_est/a0_est
       iptw_val <- iptw_ratio
     } 
     # output a list of figure and value

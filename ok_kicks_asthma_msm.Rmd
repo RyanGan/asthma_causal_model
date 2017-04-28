@@ -13,14 +13,15 @@ General purpose of this project is to try and estimate an MSM that doesn't have 
 
 Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
 
-```{r library setup}
+```{r library setup, message = F}
 library(haven) # library for importing SAS files
 library(tidyverse) # data wrangle package
 library(broom)
 library(tmle)
 library(SuperLearner)
-library(MASS)
 ```
+
+Importing SAS dataset and limiting to covariates found in Sheryl's code. I could not find some covariates, so I used some variables that were similar. Example is regcomm. I am also going to filter prevalent asthma, indicated by asthma == 1.
 
 ```{r import and data wrangle}
 no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
@@ -54,9 +55,13 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
 Calculating some of the descriptive tables in Sheryl's dissertation.
 
 ```{r descriptives}
+# edvist by inbuff in children with asthma
 xtabs(~ edvisit + inbuff, data = asthma_df)
-
+# caluclated odds ratio
+(20/178)/(48/550)
 ```
+
+Crude odds ratio calculations.
 
 ```{r prev asthma standard estimates}
 # prevalent asthma 
@@ -68,8 +73,11 @@ crude_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
 vals <- round(exp(c(crude_mod[2,2], crude_mod[2,2]-1.96*crude_mod[2,3], 
       crude_mod[2,2]+1.96*crude_mod[2,3])),2)
 rbind(c("OR", "Lower_95", "Upper_95"), vals)
+```
 
+Adjusted model using covariates that will go in to SuperLearner.
 
+```{r prev asthma adjusted model}
 # adjusted model
 adj_mod <- tidy(glm(edvisit ~ inbuff + mfi_t + adengonly + eslgood + 
           piprlt50 + pctlata + ph75_100k + pctutilinc + pctotown + pctnofuel + 
@@ -82,19 +90,96 @@ vals <- round(exp(c(adj_mod[2,2], adj_mod[2,2]-1.96*adj_mod[2,3],
 rbind(c("OR", "Lower_95", "Upper_95"), vals)
 ```
 
+### IPTW
+
+IPTW function.
+
+```{r iptw function, message = F, echo = F}
+# inverse probability of treatment weighting function
+iptw_func <- function(data, y, a, w, estimate){
+  # step 1: estimate propensity of treatment ----
+    prop_mod <- glm(as.formula(paste(a, w, sep = "~")), data = data, 
+                    family = "binomial")
+  # step 2: estimate weights ----
+    # vector of propensity exposed for each observation
+    prob_exposed <- predict(prop_mod, type = "response")
+    # vector of propensity not exposed
+    prob_unexposed <- 1 - prob_exposed 
+    
+    # note: 4/20/17 can't quite figure out how to include a plot and value
+    # histogram to check for ETA violation 
+    # if(eta_plot == "yes"){ # plot probability of exposed
+    # eta_fig <- hist(prob_exposed)
+    #   }
+
+  # create weights
+    wt <- as.numeric(data[,a]==1)/prob_exposed + 
+          as.numeric(data[,a]==0)/prob_unexposed
+    
+  # calculate desired estimates "diff", "ratio", "both" ----
+    # calculate mean estimate
+    a1_est <- mean(as.numeric(data[,a]==1)*as.numeric(wt)*as.numeric(unlist(data[,y])))
+    a0_est <-  mean(as.numeric(data[,a]==0)*as.numeric(wt)*as.numeric(unlist(data[,y])))
+    # calculate difference a1 to a0
+    if(estimate == "diff"){
+      iptw_diff <- a1_est - a0_est
+      iptw_val <- iptw_diff
+    }
+    # calculate ratio of a1/a0
+    if(estimate == "ratio"){
+      iptw_ratio <- a1_est/a0_est
+      iptw_val <- iptw_ratio
+    } 
+    # output a list of figure and value
+    #iptw_out <- list(eta_fig, iptw_val)
+    return(iptw_val)
+} # end function 
+
+```
+
+Running IPTW with bootstrap.
+
+```{r iptw boot}
+# percentile method with broom
+set.seed(321)
+boot_iptw <- asthma_df %>% bootstrap(1000) %>% 
+  do(tidy(iptw_func(data=., y="edvisit", a="inbuff", w=paste0("mfi_t+adengonly",
+  "+eslgood+piprlt50+pctlata+ph75_100k+pctutilinc+pctotown+pctnofuel+",
+  "kidspanengg+pkgt6sp1+regcomm+commcomr+urbanres"), estimate="ratio")))
+
+# create empty matrix
+estimates <- matrix(nrow = 1, ncol = 3, byrow = T)
+colnames(estimates) <- c("boot_median", "lower_95", "upper_95")
+
+# fill matrix 
+
+estimates[,1] <- exp(round(quantile(boot_iptw$x, 0.5),3))
+estimates[,2] <- exp(round(quantile(boot_iptw$x, 0.025),3))
+estimates[,3] <- exp(round(quantile(boot_iptw$x, 0.975),3))
+
+# convert matrix to dataframe
+est_df <- data.frame(estimates)
+
+knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
+```
+
+IPTW method produces really high upper bound for CI.
+
 ### TMLE
 
 Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the dataframes I have.
 
 ```{r tmle msm}
+# defining superlearner libraries to use
+# random forest and nerual net can produce different answers
+sl_lib <- c("SL.glm","SL.step","SL.glm.interaction")
+
 tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff, 
                  W = subset(asthma_df, select = -c(edvisit, inbuff, asthma)),
-                 Q.SL.library = c("SL.nnet", "SL.glm", "SL.randomForest", "SL.step",
-                                  "SL.glm.interaction"), 
-                 g.SL.library = c("SL.nnet", "SL.glm", "SL.randomForest", "SL.step",
-                                  "SL.glm.interaction"), 
-                 family = "binomial")
+                 Q.SL.library = sl_lib, g.SL.library = sl_lib, 
+                 V = 10, family = "binomial")
 tmle_mod
 ```
 
 
+I get similar answers to the crude and adjusted, but confidence intervales indicate statistical significance.
