@@ -1,5 +1,5 @@
 ---
-title: "Okland Kicks Asthma MSM"
+title: "Oakland Kicks Asthma MSM"
 author: "Ryan_Gan"
 date: "April 25, 2017"
 output: html_document
