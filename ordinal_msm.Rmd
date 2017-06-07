@@ -31,7 +31,8 @@ sim_data <- data_frame(x = rnorm(n, 16, 4)) %>%
          # dummy variable
          x1 = ifelse(x_cat == 1, 1, 0),
          x2 = ifelse(x_cat == 2, 1, 0),
-         x3 = ifelse(x_cat == 3, 1, 0))
+         x3 = ifelse(x_cat == 3, 1, 0),
+         x2_3 = ifelse(x_cat == 2 | x_cat == 3, 1, 0))
 ```
 
   
@@ -52,12 +53,6 @@ pr_y_x <- predict(mod1, sim_data, type="response")
 # plot of predicted probability of continous variable
 ggplot(sim_data, aes(x=x, y=pr_y_x)) +
   geom_point()
-
-
-# estimate categorical increase
-mod2 <- glm(y~x2+x3, sim_data, family="binomial")
-
-pr_cat_x <- predict(mod2, sim_data, type="response")
 
 ```
 
@@ -82,6 +77,11 @@ summary(risk_diff_mod)
 # comparing difference in x3 to x2
 risk_diff_mod2 <- glm(y~x3+x1, sim_data, family="binomial"(link="identity"))
 summary(risk_diff_mod2)
+# difference between groups 3 and 2 as well
 # now what if we combine groups x 3 and 2 together and compared against 1
+
+risk_diff_mod3 <- glm(y~x2_3, sim_data,family="binomial"(link="identity"))
+summary(risk_diff_mod3)
+
 
 ```
