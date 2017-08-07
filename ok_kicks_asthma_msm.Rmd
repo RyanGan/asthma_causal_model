@@ -9,11 +9,19 @@ output: html_document
 
 General purpose of this project is to try and estimate an MSM that doesn't have an ETA violation.
 
+## Research Question
+
+Aim: Utilize a MSM to determine the causal relation between residential proximity to freeway and asthma-related morbidity in children with asthma.
+
+Study population: Cohort of school children with asthma living in Oakland, California.
+Outcome: Emergency room visit.
+Exposure: Living within 500 meters of a freeway.
+
 ## Replication of Sheryl's Dissertation Results
 
 Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
 
-```{r library setup, message = F}
+```{r library setup, echo = F, warning = F, message = F}
 library(haven) # library for importing SAS files
 library(tidyverse) # data wrangle package
 library(broom)
@@ -21,19 +29,19 @@ library(tmle)
 library(SuperLearner)
 ```
 
-Importing SAS dataset and limiting to covariates found in Sheryl's code. I could not find some covariates, so I used some variables that were similar. Example is regcomm. I am also going to filter prevalent asthma, indicated by asthma == 1.
+Importing SAS data set and limiting to covariates found in Sheryl's code. I could not find some covariates, so I used some variables that were similar. Example is regcomm. I am also going to filter prevalent asthma, indicated by asthma = 1.
 
-```{r import and data wrangle}
+```{r import and data wrangle, echo = F, warning = F, message = F}
 no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
   select(OKAID, NO2)
   
 no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
 colnames(no2layer) <- no2_col_names # assign lowercase col names to df
 
-#head(no2layer) # check out the first 6 lines
+# head(no2layer) # check out the first 6 lines
 
 okawork <- read_sas("./okawork1.sas7bdat")
-#glimpse(okawork) # 433 variables; not priting
+# glimpse(okawork) # 433 variables; not priting
 
 # join okawork with no2layer by okaid
 asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
@@ -52,18 +60,18 @@ asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
 
 ```
 
-Calculating some of the descriptive tables in Sheryl's dissertation.
+2x2 table of ED visit by living within 500 m buffer.
 
-```{r descriptives}
+```{r descriptives, echo = F, warning = F, message = F}
 # edvist by inbuff in children with asthma
 xtabs(~ edvisit + inbuff, data = asthma_df)
-# caluclated odds ratio
+# caluclated crue odds ratio
 (20/178)/(48/550)
 ```
 
-Crude odds ratio calculations.
+Crude odds ratio calculations using standard logistic regression.
 
-```{r prev asthma standard estimates}
+```{r prev asthma standard estimates, echo = F, warning = F, message = F}
 # prevalent asthma 
 # crude model
 crude_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
@@ -75,9 +83,9 @@ vals <- round(exp(c(crude_mod[2,2], crude_mod[2,2]-1.96*crude_mod[2,3],
 rbind(c("OR", "Lower_95", "Upper_95"), vals)
 ```
 
-Adjusted model using covariates that will go in to SuperLearner.
+Adjusted logistic model using covariates that will go in to SuperLearner. Covariates were selected during Sheryl's dissertation.
 
-```{r prev asthma adjusted model}
+```{r prev asthma adjusted model, echo = F, warning = F, message = F}
 # adjusted model
 adj_mod <- tidy(glm(edvisit ~ inbuff + mfi_t + adengonly + eslgood + 
           piprlt50 + pctlata + ph75_100k + pctutilinc + pctotown + pctnofuel + 
@@ -92,67 +100,37 @@ rbind(c("OR", "Lower_95", "Upper_95"), vals)
 
 ### IPTW
 
-IPTW function.
+IPTW function (custom function).
 
-```{r iptw function, message = F, echo = F}
-# inverse probability of treatment weighting function
-iptw_func <- function(data, y, a, w, estimate){
-  # step 1: estimate propensity of treatment ----
-    prop_mod <- glm(as.formula(paste(a, w, sep = "~")), data = data, 
-                    family = "binomial")
-  # step 2: estimate weights ----
-    # vector of propensity exposed for each observation
-    prob_exposed <- predict(prop_mod, type = "response")
-    # vector of propensity not exposed
-    prob_unexposed <- 1 - prob_exposed 
-    
-    # note: 4/20/17 can't quite figure out how to include a plot and value
-    # histogram to check for ETA violation 
-    # if(eta_plot == "yes"){ # plot probability of exposed
-    # eta_fig <- hist(prob_exposed)
-    #   }
+```{r eta check, echo = F, warning = F, message = F}
+a_mod <- glm(inbuff ~ mfi_t+adengonly+eslgood+piprlt50+pctlata+ph75_100k+
+  pctutilinc+pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres, 
+  data = asthma_df, family = "binomial")
 
-  # create weights
-    wt <- as.numeric(data[,a]==1)/prob_exposed + 
-          as.numeric(data[,a]==0)/prob_unexposed
-    
-  # calculate desired estimates "diff", "ratio", "both" ----
-    # calculate mean estimate
-    a1_est <- mean(as.numeric(data[,a]==1)*as.numeric(wt)*as.numeric(unlist(data[,y])))
-    a0_est <-  mean(as.numeric(data[,a]==0)*as.numeric(wt)*as.numeric(unlist(data[,y])))
-    # calculate difference a1 to a0
-    if(estimate == "diff"){
-      iptw_diff <- a1_est - a0_est
-      iptw_val <- iptw_diff
-    }
-    # calculate ratio of a1/a0
-    if(estimate == "ratio"){
-      iptw_ratio <- a1_est/a0_est
-      iptw_val <- iptw_ratio
-    } 
-    # output a list of figure and value
-    #iptw_out <- list(eta_fig, iptw_val)
-    return(iptw_val)
-} # end function 
+# estimate probability of a 
+pr_a <- predict(a_mod, type = "response")
 
+ggplot(as.tibble(pr_a), aes(value)) +
+  geom_density()
 ```
 
-Running IPTW with bootstrap.
+Looks like we have a possible ETA violation.The distribution of living with 500 meters of a major road-way appears to be almost perfectly predicted by some of our covariates.
 
-```{r iptw boot}
+Running IPTW with bootstrap to see results.
+
+```{r iptw boot, echo = F, warning = F, message = F}
 # percentile method with broom
 set.seed(321)
 boot_iptw <- asthma_df %>% bootstrap(1000) %>% 
-  do(tidy(iptw_func(data=., y="edvisit", a="inbuff", w=paste0("mfi_t+adengonly",
+  do(tidy(MSModelR::iptw(data=., y="edvisit", a="inbuff", w=paste0("mfi_t+adengonly",
   "+eslgood+piprlt50+pctlata+ph75_100k+pctutilinc+pctotown+pctnofuel+",
-  "kidspanengg+pkgt6sp1+regcomm+commcomr+urbanres"), estimate="ratio")))
+  "kidspanengg+pkgt6sp1+commcomr+urbanres"), estimate="ratio")))
 
 # create empty matrix
 estimates <- matrix(nrow = 1, ncol = 3, byrow = T)
 colnames(estimates) <- c("boot_median", "lower_95", "upper_95")
 
 # fill matrix 
-
 estimates[,1] <- exp(round(quantile(boot_iptw$x, 0.5),3))
 estimates[,2] <- exp(round(quantile(boot_iptw$x, 0.025),3))
 estimates[,3] <- exp(round(quantile(boot_iptw$x, 0.975),3))
@@ -163,15 +141,45 @@ est_df <- data.frame(estimates)
 knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
 ```
 
-IPTW method produces really high upper bound for CI.
+Percentile bootstrap method produces really high upper bound for CI with this data set. Could be because possible IPTW violation.
+
+We'll try with g-formula (simple substitution) to see if we get different results.
+```{r gform, echo=F, message=F, warning=F}
+# set seed
+set.seed(123)
+boot_gform <- asthma_df %>% bootstrap(1000) %>% 
+  do(tidy(MSModelR::g.formula(data=., y="edvisit", a="inbuff", 
+  q.model=paste0("inbuff+mfi_t+adengonly+eslgood+piprlt50+pctlata+ph75_100k+",
+  "pctutilinc+pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres"), 
+  model.family = "binomial", estimate="ratio")))
+
+# create empty matrix
+estimates <- matrix(nrow = 1, ncol = 3, byrow = T)
+colnames(estimates) <- c("boot_median", "lower_95", "upper_95")
+
+# fill matrix 
+estimates[,1] <- exp(round(quantile(boot_gform$x, 0.5),3))
+estimates[,2] <- exp(round(quantile(boot_gform$x, 0.025),3))
+estimates[,3] <- exp(round(quantile(boot_gform$x, 0.975),3))
+
+# convert matrix to dataframe
+est_df <- data.frame(estimates)
+
+knitr::kable(est_df, caption = paste0("G-formula estimates with bootstrapped 95%CI"))
+```
+
+G-formula produces estimates that are very different from IPTW and our standard regression estimate method.
 
 ### TMLE
 
-Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the dataframes I have.
+Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the data frames I have. TMLE uses an ensemble of machine learning algorithms to optimize the covaraites that predict treatment and the q-model. It then uses a doubly-robust method to estimate the causal estimand.
+
+Also, I can feed every variable other than treatment and the outcome in to the model and let it decide what's the best fit.
 
 ```{r tmle msm}
 # defining superlearner libraries to use
-# random forest and nerual net can produce different answers
+# random forest and nerual net can produce different answers; leave out for now
+# since i'm not crossvalidating yet
 sl_lib <- c("SL.glm","SL.step","SL.glm.interaction")
 
 tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff, 
@@ -181,5 +189,12 @@ tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff,
 tmle_mod
 ```
 
+I get similar answers to the crude and adjusted as IPTW, but confidence intervals indicate statistical significance.
 
-I get similar answers to the crude and adjusted, but confidence intervales indicate statistical significance.
+## Next steps
+
+Make sure the machine-learning steps in the TMLE model is accurate (run cross-validations and sensitivity tests).
+
+Look at the exposure, NO~2~. We will have to use a binary classification (NO~2~ cut point) or some comparisons of ordinal variables (high vs low). This will result in a loss of information, but may be more relevant to public health.
+
+Try structural nested models using DTreg package,e. SNMs are MSMs that allow continuous variables. In the past, they were difficult to use and implement, thus were not widely used. This is appealing because I think we can answer questions like "what if we brought NO~2~ down to the mean level of ...?".
