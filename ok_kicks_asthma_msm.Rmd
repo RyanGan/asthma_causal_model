@@ -33,16 +33,19 @@ Importing SAS data set and limiting to covariates found in Sheryl's code. I coul
 
 ```{r import and data wrangle, echo = F, warning = F, message = F}
 no2layer <- read_sas("./no2layer.sas7bdat") %>% # summary of NO2
-  select(OKAID, NO2)
+  select(OKAID, NO2) %>% 
+  mutate(OKAID = as.character(OKAID))
   
 no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
 colnames(no2layer) <- no2_col_names # assign lowercase col names to df
 
-# head(no2layer) # check out the first 6 lines
+#head(no2layer) # check out the first 6 lines
+#glimpse(no2layer)
 
-okawork <- read_sas("./okawork1.sas7bdat")
-# glimpse(okawork) # 433 variables; not priting
-
+okawork <- read_sas("./okawork1.sas7bdat") %>% 
+  # convert okaid to character
+  mutate(okaid = as.character(okaid))
+  
 # join okawork with no2layer by okaid
 asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
   # create ed visit variable from sh_11 var (assuming 1=event)
@@ -168,11 +171,11 @@ est_df <- data.frame(estimates)
 knitr::kable(est_df, caption = paste0("G-formula estimates with bootstrapped 95%CI"))
 ```
 
-G-formula produces estimates that are very different from IPTW and our standard regression estimate method.
+G-formula produces estimates that are very different from IPTW and our standard regression estimate method. Not quite sure why the estimates are so different... I'll need to think about it.
 
 ### TMLE
 
-Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the data frames I have. TMLE uses an ensemble of machine learning algorithms to optimize the covaraites that predict treatment and the q-model. It then uses a doubly-robust method to estimate the causal estimand.
+Targeted maximum likelihood (TMLE) uses an ensemble of machine learning algorithms to optimize the covaraites that predict treatment and the q-model. It then uses a doubly-robust method to estimate the causal estimand, Not really sure what covariates to feed to the models, but I'm going to just mess around with TMLE for now with the data frames I have. 
 
 Also, I can feed every variable other than treatment and the outcome in to the model and let it decide what's the best fit.
 
@@ -189,7 +192,7 @@ tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff,
 tmle_mod
 ```
 
-I get similar answers to the crude and adjusted as IPTW, but confidence intervals indicate statistical significance.
+I get similar answers to the crude and adjusted as IPTW, but confidence intervals are much tighter.
 
 ## Next steps
 
@@ -198,3 +201,142 @@ Make sure the machine-learning steps in the TMLE model is accurate (run cross-va
 Look at the exposure, NO~2~. We will have to use a binary classification (NO~2~ cut point) or some comparisons of ordinal variables (high vs low). This will result in a loss of information, but may be more relevant to public health.
 
 Try structural nested models using DTreg package,e. SNMs are MSMs that allow continuous variables. In the past, they were difficult to use and implement, thus were not widely used. This is appealing because I think we can answer questions like "what if we brought NO~2~ down to the mean level of ...?".
+
+```{r adding no2, echo=F, warning=F, message=F}
+# join okawork with no2layer by okaid
+asthma_no2_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
+  # create ed visit variable from sh_11 var (assuming 1=event)
+  mutate(edvisit = ifelse(sh_11 == 1, 1,
+                   ifelse(sh_11 == 2, 0, NA))) %>% 
+  # filter out missing edvisits
+  filter(!is.na(edvisit)) %>%
+  # filter to prevalent asthma cases
+  select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50, pctlata,
+         ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
+         regcomm, commcomr, urbanres, no2) %>% 
+  filter(asthma == 1) %>% 
+  mutate(no2_cut = ifelse(no2 >= 19, 1, 0))
+```
+
+Distribution of NO~2~ values and some summary stats.
+```{r no2 plot, echo=F}
+no2_dist_plot <- ggplot(data = asthma_no2_df, aes(x=no2)) +
+  geom_density()
+
+no2_dist_plot
+
+summary(asthma_no2_df$no2)
+```
+
+Crude association between increasing NO~2~ and ED visits in a population with asthma.
+```{r no2 unadjusted}
+no2_mod <- tidy(glm(edvisit ~ no2, family = "binomial", data = asthma_no2_df))
+
+# crude odds ratio and 95%CI
+vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
+      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
+```
+
+Mean level of NO~2~ by ED visit group.
+```{r mean no2, echo = F}
+mean_no2 <- tidy(glm(no2 ~ edvisit, family = "gaussian", data = asthma_no2_df))
+mean_no2
+```
+
+Adjusting for the same covariates we adjusted for in our buffer analyses.
+```{r no2 adjusted}
+no2_mod <- tidy(glm(edvisit ~ no2+mfi_t+adengonly+eslgood+piprlt50+pctlata+
+  ph75_100k+pctutilinc+pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres, 
+  family = "binomial", data = asthma_no2_df))
+
+vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
+      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
+```
+
+We might have overadjusted. Signal is still relatively strong, but our 95% CIs now contain 1. I plan to actually assess confounding criteria and build models with DAGs, just being a little lazy here...
+
+```{r linearity assumption, echo = F}
+# prevalence by bin
+no2_bins <- seq(from = 6, to = 24, by = 2)
+no2_labels <- seq(from = 7, to = 23, by = 2)
+
+no2_prev_bin <- asthma_no2_df %>% 
+  mutate(no2_bin = cut(no2, breaks = no2_bins, labels = no2_labels)) %>% 
+  group_by(no2_bin) %>% 
+  summarise(n = n(), ed_sum = sum(edvisit)) %>% 
+  mutate(ed_prev = ed_sum/n, no2 = as.numeric(as.character(no2_bin))) %>% 
+  select(-no2_bin)
+# plot
+ggplot(data=asthma_no2_df, aes(x=no2, y=edvisit)) +
+  geom_smooth(method = "loess", se=T) + 
+  geom_smooth(method = "lm", formula=y~x, se=F, color = "red") +
+  geom_point(data = no2_prev_bin, aes(x=no2, y=ed_prev)) +
+  theme_bw()
+```
+
+I think the relationship between NO~2~ and ED visits can be more or less represented by a linear relationship. Smoothed function is a little funky. 
+
+Anyways, let's create a cut point at 19, where the point kind of jumps to try out some of our MSM approaches.
+
+First some standard calculations.
+```{r 2x2 no2 cut}
+xtabs(~no2_cut + edvisit, data= asthma_no2_df)
+(60/151)/(138/447)
+
+no2_mod <- tidy(glm(edvisit ~ no2_cut, family = "binomial", data = asthma_no2_df))
+
+# crude odds ratio and 95%CI
+crude_vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
+      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), crude_vals)
+
+no2_adj_mod <- tidy(glm(edvisit ~ no2_cut+mfi_t+adengonly+eslgood+piprlt50+pctlata+
+  ph75_100k+pctutilinc+pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres, 
+  family = "binomial", data = asthma_no2_df))
+
+adj_vals <- round(exp(c(no2_adj_mod[2,2], no2_adj_mod[2,2]-1.96*no2_adj_mod[2,3], 
+      no2_adj_mod[2,2]+1.96*no2_adj_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), adj_vals)
+```
+
+MSM approach.
+
+```{r no2 iptw boot, echo=F}
+# percentile method with broom
+set.seed(321)
+boot_iptw <- asthma_no2_df %>% bootstrap(1000) %>% 
+  do(tidy(MSModelR::iptw(data=., y="edvisit", a="no2_cut", 
+  w=paste0("mfi_t+adengonly+eslgood+piprlt50+pctlata+ph75_100k+pctutilinc+",
+  "pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres"), 
+  estimate="ratio")))
+
+# create empty matrix
+estimates <- matrix(nrow = 1, ncol = 3, byrow = T)
+colnames(estimates) <- c("boot_median", "lower_95", "upper_95")
+
+# fill matrix 
+estimates[,1] <- exp(round(quantile(boot_iptw$x, 0.5),3))
+estimates[,2] <- exp(round(quantile(boot_iptw$x, 0.025),3))
+estimates[,3] <- exp(round(quantile(boot_iptw$x, 0.975),3))
+
+# convert matrix to dataframe
+est_df <- data.frame(estimates)
+
+knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
+```
+
+Definately hit some ETA vilations for some of the boot iterations. 
+
+```{r tmle no2 cut}
+sl_lib <- c("SL.glm","SL.step","SL.glm.interaction")
+
+tmle_mod <- tmle(Y = asthma_no2_df$edvisit, A = asthma_no2_df$no2_cut, 
+                 W = subset(asthma_no2_df, 
+                            select = -c(edvisit, inbuff, asthma,no2_cut,no2)),
+                 Q.SL.library = sl_lib, g.SL.library = sl_lib, 
+                 V = 10, family = "binomial")
+tmle_mod
+```
+
