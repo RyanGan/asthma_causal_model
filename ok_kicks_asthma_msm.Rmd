@@ -25,8 +25,10 @@ Importing SAS files of Oakland Kicks Asthma data provided by Sheryl.
 library(haven) # library for importing SAS files
 library(tidyverse) # data wrangle package
 library(broom)
-library(tmle)
-library(SuperLearner)
+library(tmle) # targeted maximum likelihood package
+library(SuperLearner) # ensemble method package
+#library(nnet) # neural net algorithm package
+#library(randomForest) # random forest algorithm package
 ```
 
 Importing SAS data set and limiting to covariates found in Sheryl's code. I could not find some covariates, so I used some variables that were similar. Example is regcomm. I am also going to filter prevalent asthma, indicated by asthma = 1.
@@ -181,9 +183,9 @@ Also, I can feed every variable other than treatment and the outcome in to the m
 
 ```{r tmle msm}
 # defining superlearner libraries to use
-# random forest and nerual net can produce different answers; leave out for now
 # since i'm not crossvalidating yet
 sl_lib <- c("SL.glm","SL.step","SL.glm.interaction")
+
 
 tmle_mod <- tmle(Y = asthma_df$edvisit, A = asthma_df$inbuff, 
                  W = subset(asthma_df, select = -c(edvisit, inbuff, asthma)),
