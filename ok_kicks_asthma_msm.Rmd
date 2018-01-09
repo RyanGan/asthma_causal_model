@@ -29,6 +29,7 @@ library(tmle) # targeted maximum likelihood package
 library(SuperLearner) # ensemble method package
 #library(nnet) # neural net algorithm package
 #library(randomForest) # random forest algorithm package
+library(glmnet)
 ```
 
 Importing SAS data set and limiting to covariates found in Sheryl's code. I could not find some covariates, so I used some variables that were similar. Example is regcomm. I am also going to filter prevalent asthma, indicated by asthma = 1.
@@ -47,7 +48,9 @@ colnames(no2layer) <- no2_col_names # assign lowercase col names to df
 okawork <- read_sas("./okawork1.sas7bdat") %>% 
   # convert okaid to character
   mutate(okaid = as.character(okaid))
-  
+
+glimpse(okawork)
+
 # join okawork with no2layer by okaid
 asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
   # create ed visit variable from sh_11 var (assuming 1=event)
@@ -200,6 +203,8 @@ I get similar answers to the crude and adjusted as IPTW, but confidence interval
 
 Make sure the machine-learning steps in the TMLE model is accurate (run cross-validations and sensitivity tests).
 
+## NO2 exposure and ED visit
+
 Look at the exposure, NO~2~. We will have to use a binary classification (NO~2~ cut point) or some comparisons of ordinal variables (high vs low). This will result in a loss of information, but may be more relevant to public health.
 
 Try structural nested models using DTreg package,e. SNMs are MSMs that allow continuous variables. In the past, they were difficult to use and implement, thus were not widely used. This is appealing because I think we can answer questions like "what if we brought NO~2~ down to the mean level of ...?".
@@ -217,47 +222,124 @@ asthma_no2_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
          ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
          regcomm, commcomr, urbanres, no2) %>% 
   filter(asthma == 1) %>% 
-  mutate(no2_cut = ifelse(no2 >= 19, 1, 0))
+  mutate(no2_cut = ifelse(no2 >= 19, 1, 0),
+         no2_median = ifelse( no2 >= 17.197, 1, 0))
 ```
 
 Distribution of NO~2~ values and some summary stats.
 ```{r no2 plot, echo=F}
-no2_dist_plot <- ggplot(data = asthma_no2_df, aes(x=no2)) +
-  geom_density()
+no2_dist_plot <- ggplot(data = asthma_no2_df, aes(x=no2^2)) +
+  geom_density() +
+  theme_minimal()
 
 no2_dist_plot
 
 summary(asthma_no2_df$no2)
 ```
 
-Crude association between increasing NO~2~ and ED visits in a population with asthma.
-```{r no2 unadjusted}
-no2_mod <- tidy(glm(edvisit ~ no2, family = "binomial", data = asthma_no2_df))
-
-# crude odds ratio and 95%CI
-vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
-      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
-rbind(c("OR", "Lower_95", "Upper_95"), vals)
-```
-
-Mean level of NO~2~ by ED visit group.
+### Mean level of NO~2~ by ED visit group.
 ```{r mean no2, echo = F}
 mean_no2 <- tidy(glm(no2 ~ edvisit, family = "gaussian", data = asthma_no2_df))
 mean_no2
 ```
 
-Adjusting for the same covariates we adjusted for in our buffer analyses.
-```{r no2 adjusted}
-no2_mod <- tidy(glm(edvisit ~ no2+mfi_t+adengonly+eslgood+piprlt50+pctlata+
-  ph75_100k+pctutilinc+pctotown+pctnofuel+kidspanengg+pkgt6sp1+commcomr+urbanres, 
-  family = "binomial", data = asthma_no2_df))
+### Identifying potential confounders
 
-vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
-      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
-rbind(c("OR", "Lower_95", "Upper_95"), vals)
+#### Association with ED visits
+
+Visualizing distributions of continuous predictor by ED visits.
+
+```{r edvisit_distribution}
+cont_var <- c("mfi_t", "adengonly", "eslgood", "piprlt50", "pctlata", "ph75_100k",
+              "pctutilinc", "pctotown", "pctnofuel", "kidspanengg", "pkgt6sp1")
+
+# subset and transform data for evaluation of small multiples
+edvis_continous <- asthma_no2_df %>% 
+  select(cont_var, no2, edvisit) %>% 
+  # gather
+  gather("x_variable", "x_value", 1:12)
+
+# density plot by ed visit
+den_plot <- ggplot(data=edvis_continous, aes(x=x_value, colour=as.factor(edvisit), 
+                                         group=as.factor(edvisit))) +
+  geom_density() +
+  facet_wrap(~x_variable, scales = "free") +
+  theme_minimal()
+
+den_plot
 ```
 
-We might have overadjusted. Signal is still relatively strong, but our 95% CIs now contain 1. I plan to actually assess confounding criteria and build models with DAGs, just being a little lazy here...
+Density plots doesn't really show anything unusual.
+
+I'll look at univariate association with ED visits with potential predictors. I'm using logistic regression.
+
+```{r edvisit_association}
+ed_univariate <- asthma_no2_df %>% 
+  select(-c(asthma, edvisit)) %>% 
+  names()%>% 
+  paste('edvisit ~', .) %>% 
+  map(~ broom::tidy(glm(as.formula(.x), family="binomial"(link="logit"),
+                        data = asthma_no2_df))) %>% 
+  # subset to variable
+  map(~ slice(., 2)) %>% 
+  map(~ select(., term, estimate, p.value)) %>% 
+  map_dfr(~as_data_frame(.)) %>% 
+  mutate(oddsratio = exp(estimate)) %>% 
+  select(term, oddsratio, estimate, p.value)
+
+knitr::kable(ed_univariate, caption = "Univariate association with ED visit")
+```
+
+I'd say inbuff (within 500 ft), mfi_t, piprlt50, ph75_100k, pctotown, and no2 are the most notable predictors of ED visit. inbuff and no2 are risk factors of interest and the others may be precision variables in this case.
+
+### Association with NO2 (continous)
+
+Visualizing scatter plots of NO~2~ by continuous variables.
+
+```{r no2_association}
+# wide to long
+edvis_prdictors <- asthma_no2_df %>% 
+  select(cont_var, no2, edvisit) %>% 
+  # gather
+  gather("x_variable", "x_value", 1:12)
+
+# subset and transform data for evaluation of small multiples
+no2_continous <- asthma_no2_df %>% 
+  select(cont_var, no2) %>% 
+  # gather
+  gather("x_variable", "x_value", 1:11)
+
+# scatter plot no2 by variables
+scat_plot <- ggplot(data=no2_continous, aes(x=x_value, y=no2)) +
+  geom_point() +
+  geom_smooth(method = lm) +
+  facet_wrap(~x_variable, scales = "free") +
+  theme_minimal()
+
+scat_plot
+```
+
+Linear predictors of NO~2~ levels. Using linear regression.
+
+```{r no2_association}
+no2_univariate <- asthma_no2_df %>% 
+  select(-c(no2_cut, no2_median, asthma, no2)) %>% 
+  names()%>% 
+  paste('no2 ~', .) %>% 
+  map(~ broom::tidy(lm(as.formula(.x), data = asthma_no2_df))) %>% 
+  # subset to variable
+  map(~ slice(., 2)) %>% 
+  map(~ select(., term, estimate, p.value)) %>% 
+  map_dfr(~as_data_frame(.)) %>% 
+  select(term, estimate, p.value)
+
+knitr::kable(no2_univariate, 
+             caption = "Univariate association with continous NO2")
+```
+
+All these variables predict or are associated with NO~2~ levels. Probably why they are in Sheryl's analysis to begin with :).
+
+### Check of linearity.
 
 ```{r linearity assumption, echo = F}
 # prevalence by bin
@@ -275,10 +357,37 @@ ggplot(data=asthma_no2_df, aes(x=no2, y=edvisit)) +
   geom_smooth(method = "loess", se=T) + 
   geom_smooth(method = "lm", formula=y~x, se=F, color = "red") +
   geom_point(data = no2_prev_bin, aes(x=no2, y=ed_prev)) +
-  theme_bw()
+  theme_minimal()
 ```
 
 I think the relationship between NO~2~ and ED visits can be more or less represented by a linear relationship. Smoothed function is a little funky. 
+
+### Crude association between increasing NO~2~ and ED visits in a population with asthma.
+```{r no2 unadjusted}
+no2_mod <- tidy(glm(edvisit ~ no2, family = "binomial", data = asthma_no2_df))
+
+# crude odds ratio and 95%CI
+vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
+      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
+```
+
+### Adjusting for values identified as confounders with proximity to roadways
+
+Adjusting for the same covariates we adjusted for in our buffer analyses.
+```{r no2 adjusted}
+no2_mod <- tidy(glm(edvisit ~ no2 + mfi_t + piprlt50 + ph75_100k +pctotown, 
+  family = "binomial", data = asthma_no2_df))
+
+no2_mod
+
+vals <- round(exp(c(no2_mod[2,2], no2_mod[2,2]-1.96*no2_mod[2,3], 
+      no2_mod[2,2]+1.96*no2_mod[2,3])),2)
+
+rbind(c("OR", "Lower_95", "Upper_95"), vals)
+```
+
+The variable piprlt50 is a confounding variable and when adjusted for, the signal with no2 is not as strong. 95% CIs now contain 1. I am not sure what this variable is.
 
 Anyways, let's create a cut point at 19, where the point kind of jumps to try out some of our MSM approaches.
 
@@ -331,12 +440,15 @@ knitr::kable(est_df, caption = paste0("IPTW estimates with bootstrapped 95%CI"))
 
 Definately hit some ETA vilations for some of the boot iterations. 
 
+Trying TMLE. Including glmnet for lasso/elastic net as an additional algorithm in addition to base algorithms.
+
 ```{r tmle no2 cut}
-sl_lib <- c("SL.glm","SL.step","SL.glm.interaction")
+sl_lib <- c("SL.glm","SL.step","SL.glm.interaction", "SL.glmnet")
 
 tmle_mod <- tmle(Y = asthma_no2_df$edvisit, A = asthma_no2_df$no2_cut, 
                  W = subset(asthma_no2_df, 
-                            select = -c(edvisit, inbuff, asthma,no2_cut,no2)),
+                            select = -c(edvisit, inbuff, asthma,no2_cut,
+                                        no2_median, no2)),
                  Q.SL.library = sl_lib, g.SL.library = sl_lib, 
                  V = 10, family = "binomial")
 tmle_mod
