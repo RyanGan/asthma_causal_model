@@ -1,0 +1,92 @@
+---
+title: "NO2 and asthma using TMLE"
+output: html_notebook
+editor_options: 
+  chunk_output_type: inline
+---
+
+Random Forest to find out covariates that predict binary NO2.
+
+```{r packages}
+library(tidyverse)
+library(randomForest)
+library(tmle)
+library(SuperLearner)
+```
+
+Loading Oakland Kicks Asthma dataframe and joining with NO~2~ dataframe.
+```{r read_data}
+no2layer <- haven::read_sas("./no2layer.sas7bdat") %>% # summary of NO2
+  select(OKAID, NO2) %>% 
+  mutate(OKAID = as.character(OKAID))
+  
+no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
+colnames(no2layer) <- no2_col_names # assign lowercase col names to df
+
+#head(no2layer) # check out the first 6 lines
+#glimpse(no2layer)
+
+okawork <- haven::read_sas("./okawork1.sas7bdat") %>% 
+  # convert okaid to character
+  mutate(okaid = as.character(okaid))
+
+# join okawork with no2layer by okaid
+asthma_no2_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
+  # create ed visit variable from sh_11 var (assuming 1=event)
+  mutate(edvisit = ifelse(sh_11 == 1, 1,
+                   ifelse(sh_11 == 2, 0, NA))) %>% 
+  # filter out missing edvisits
+  filter(!is.na(edvisit)) %>%
+  # filter to prevalent asthma cases
+  # select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50, pctlata,
+  #        ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
+  #        regcomm, commcomr, urbanres, no2) %>% 
+  filter(asthma == 1) %>% 
+  mutate(no2_cut = ifelse(no2 >= 19, 1, 0),
+         no2_median = ifelse( no2 >= 17.197, 1, 0))
+```
+
+There are over 437 variables. I beleive Sheryl had identified confounders for the living <500 meters of a roadway, but it's likely the potential confounders are different
+
+```{r possible_covs}
+possible_covs <- asthma_no2_df %>% 
+  select(school, grade, male, enghome:olanghome, api:othrace, pubhouse, assthouse,
+         hillres:estuary, pwhite:pinst, pmchhwoc:pimmb80nc, psamehome95:pworkmom,
+         pmomnlf:urban)
+# no2 cut
+no2_cut <- asthma_no2_df$no2_cut
+# asthma ed visit
+edvist <- asthma_no2_df$edvisit
+```
+
+Random forest to predict NO~2~ cut.
+
+```{r no2_rf}
+# no2 randomforest model
+no2_rf <- randomForest(as.factor(no2_cut) ~ ., data = possible_covs,
+                       importance=T, ntree=500)
+
+varImpPlot(no2_rf)
+
+# view a tree
+reprtree:::plot.getTree(no2_rf)
+
+pred <- predict(no2_rf, possible_covs)
+
+xtabs(~no2_cut + pred)
+```
+
+```{r asthma_rf}
+# asthma randomforest model
+edvist_rf <- randomForest(as.factor(edvist) ~ ., data = possible_covs,
+                       importance=T, ntree=500)
+
+varImpPlot(edvisit_rf)
+
+# view a tree
+reprtree:::plot.getTree(no2_rf)
+
+pred <- predict(no2_rf, possible_covs)
+
+xtabs(~no2_cut + pred)
+```

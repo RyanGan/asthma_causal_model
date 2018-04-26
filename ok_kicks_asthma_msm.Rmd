@@ -49,7 +49,6 @@ okawork <- read_sas("./okawork1.sas7bdat") %>%
   # convert okaid to character
   mutate(okaid = as.character(okaid))
 
-glimpse(okawork)
 
 # join okawork with no2layer by okaid
 asthma_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
@@ -82,7 +81,7 @@ Crude odds ratio calculations using standard logistic regression.
 ```{r prev asthma standard estimates, echo = F, warning = F, message = F}
 # prevalent asthma 
 # crude model
-crude_mod <- tidy(glm(edvisit ~ inbuff, data = asthma_df,
+crude_mod <- broom::tidy(glm(edvisit ~ inbuff, data = asthma_df,
                     family = "binomial"(link = "logit")))
 
 # crude odds ratio and 95%CI
