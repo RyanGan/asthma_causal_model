@@ -5,17 +5,36 @@ editor_options:
   chunk_output_type: inline
 ---
 
-Random Forest to find out covariates that predict binary NO2.
+
+## Introduction
+
+NO2 is bad. We want to know if NO2 increases the likelihood of reporting an asthma ED visit in children with asthma living in Oakland. 
+
+## Research Question
+
+Aim: Utilize a MSM to determine the causal relation between residential proximity to freeway and asthma-related morbidity in children with asthma.
+
+Study population: Cohort of school children with asthma living in Oakland, California.
+Outcome: Emergency room visit.
+Exposure: Living within 500 meters of a freeway.
+
+### Setup
+
+Loading libraries.
 
 ```{r packages}
-library(tidyverse)
-library(randomForest)
-library(tmle)
-library(SuperLearner)
+library(tidyverse) # tidyverse 
+library(randomForest) # random forest
+library(glmnet) # lasso/elastic net
+library(tmle) # targeted maximum likelihood
+library(SuperLearner) # superlearner ensemble algorightm
+library(caret) # caret ML processing
 ```
 
-Loading Oakland Kicks Asthma dataframe and joining with NO~2~ dataframe.
+Preparing Oakland Kicks Asthma dataframe and joining with NO~2~ dataframe.
+
 ```{r read_data}
+# loading no2 value
 no2layer <- haven::read_sas("./no2layer.sas7bdat") %>% # summary of NO2
   select(OKAID, NO2) %>% 
   mutate(OKAID = as.character(OKAID))
@@ -26,67 +45,191 @@ colnames(no2layer) <- no2_col_names # assign lowercase col names to df
 #head(no2layer) # check out the first 6 lines
 #glimpse(no2layer)
 
+# loading oakland working
 okawork <- haven::read_sas("./okawork1.sas7bdat") %>% 
   # convert okaid to character
   mutate(okaid = as.character(okaid))
 
-# join okawork with no2layer by okaid
+# join okawork with no2layer by okaid to create final dataframe
 asthma_no2_df <- okawork %>% right_join(no2layer, by = "okaid") %>% 
   # create ed visit variable from sh_11 var (assuming 1=event)
   mutate(edvisit = ifelse(sh_11 == 1, 1,
                    ifelse(sh_11 == 2, 0, NA))) %>% 
   # filter out missing edvisits
   filter(!is.na(edvisit)) %>%
-  # filter to prevalent asthma cases
-  # select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50, pctlata,
-  #        ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
+  # old variables
+  # select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50,
+  # pctlata, ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
   #        regcomm, commcomr, urbanres, no2) %>% 
   filter(asthma == 1) %>% 
+  # create no2 distributions
   mutate(no2_cut = ifelse(no2 >= 19, 1, 0),
          no2_median = ifelse( no2 >= 17.197, 1, 0))
 ```
 
-There are over 437 variables. I beleive Sheryl had identified confounders for the living <500 meters of a roadway, but it's likely the potential confounders are different
+## Imputing missing covariates
+
+## Potential Confounders
+
+There are over 437 variables. I beleive Sheryl had identified confounders for the living <500 meters of a roadway, but it's likely the potential confounders between NO~2~ cutoffs are different to the buffer, and perhaps even continous NO~2~. Individual schools are dummy-coded in so I'm going to take out the school id variable.
 
 ```{r possible_covs}
-possible_covs <- asthma_no2_df %>% 
-  select(school, grade, male, enghome:olanghome, api:othrace, pubhouse, assthouse,
-         hillres:estuary, pwhite:pinst, pmchhwoc:pimmb80nc, psamehome95:pworkmom,
-         pmomnlf:urban)
+# subset to possible covariates based off sheryl's list
+all_covs <- asthma_no2_df %>% 
+  select(male, enghome:olanghome, api:othrace, pubhouse,
+         assthouse, hillres:estuary, pwhite:pinst, pmchhwoc:pimmb80nc,
+         psamehome95:pworkmom, pmomnlf:urban) 
+
+# nearzero variance of possible covs
+nzv <- nearZeroVar(all_covs)
+# filter to covariates that do not have near zero variance
+covs_w_var <- all_covs[, -nzv]
+# from 339 to 273
+
+# create covariance matrix using non-parametric spearman to find vars with high
+# correlation
+corr_mat <- cor(covs_w_var, method = "spearman", 
+                use = "pairwise.complete.obs")
+
+# find highly correlated predictors
+high_cor <- findCorrelation(corr_mat, cutoff = 0.9)  
+
+# filter to variables with lower correlation than 0.8
+possible_covs <- covs_w_var[,-high_cor] 
+# reduced to 273 to 226
+
 # no2 cut
 no2_cut <- asthma_no2_df$no2_cut
+#no2 median
+no2_med <- asthma_no2_df$no2_median
 # asthma ed visit
-edvist <- asthma_no2_df$edvisit
+edvisit <- asthma_no2_df$edvisit
+
+# create dataframe to save to use with ctmle julia package
+asthma_no2_julia <- data.frame(edvisit, no2_cut, no2_med, possible_covs)
+
 ```
 
-Random forest to predict NO~2~ cut.
+Starting out with a random forest to predict NO~2~ cutoff of 19.
 
 ```{r no2_rf}
 # no2 randomforest model
 no2_rf <- randomForest(as.factor(no2_cut) ~ ., data = possible_covs,
-                       importance=T, ntree=500)
-
+                       importance = T, ntree = 500)
+# variable importance plot
 varImpPlot(no2_rf)
-
-# view a tree
-reprtree:::plot.getTree(no2_rf)
-
-pred <- predict(no2_rf, possible_covs)
-
-xtabs(~no2_cut + pred)
 ```
+
+Random forest to predict ED visit.
 
 ```{r asthma_rf}
 # asthma randomforest model
-edvist_rf <- randomForest(as.factor(edvist) ~ ., data = possible_covs,
-                       importance=T, ntree=500)
-
+edvisit_rf <- randomForest(as.factor(edvisit) ~ ., data = possible_covs,
+                       importance = T, ntree = 500)
+# variance importance plot
 varImpPlot(edvisit_rf)
+```
 
-# view a tree
-reprtree:::plot.getTree(no2_rf)
+## Cross-Validated SuperLearner Model
 
-pred <- predict(no2_rf, possible_covs)
+I'm going to take the top 20 variables of importance from the random forests for the ED visit random forest. I don't want to over-predict the NO~2~ exposure to avoid an ETA violation. 
 
-xtabs(~no2_cut + pred)
+I am also not using training/validation sets anymore to build model since I'm less concerned about the models ability to predict on other data, and more concerned about how well it predicts on the data we have.
+
+To figure out workflow, I want to subset the 300 some potential covariates to a more manageable size that will run on my local machine before I scale up to a computing cluster. Starting out by finding the 20 variables most important at predicting ED visit.
+
+```{r imp_vars}
+# finding the variable names of the most important 20 at prediciting ed visit
+ed_imp_mat <- data.frame(edvisit_rf$importance)
+# names
+ed_imp_mat$var <- rownames(ed_imp_mat) 
+# sort and extract first 20
+ed_imp_var <- ed_imp_mat %>% 
+  arrange(desc(MeanDecreaseGini)) %>% 
+  filter(MeanDecreaseGini > 1) 
+
+# test covariates
+test_covs <- possible_covs[, ed_imp_var$var]
+# final dataframe to analyze
+asthma_no2cut <- cbind(edvisit, no2_cut, test_covs) 
+```
+
+Using lasso/elastic net regression to reduce one more time to avoid variables that may result in ETA violation.
+```{r no2_lasso}
+# last reduction step, finding variables most predictive of ed visit using
+# predictive asthma to make sure I don't have covariates that would cause and 
+# ETA violation
+head(test_covs)
+# bind back in no2 cut and edvisit to covariates 
+no2_lasso <- glmnet(y=as.factor(no2_cut), x=as.matrix(test_covs), 
+                 alpha=1, family="binomial")
+# plot (some variable is wonky)
+plot(no2_lasso)
+# coeff
+coef(no2_lasso)[,10]
+```
+
+Detached residence is highly predictive in being less-likely to be exposed to NO~2~ cutoff.
+
+Setting SuperLearner Libraries to use. I think I'll start with glm, step, interaction, glmnet. Note, I think using random forest is too good at classifying the likelihood of an event/exposure, and can induce ETA violations.
+
+```{r superlearner_no2}
+# reducing tree size to 500
+custom.sl.rf <- function(...) {
+  SL.randomForest(..., ntree = 500)
+}
+
+# superlearner library reduced library
+sl_lib <- c("SL.glmnet", "SL.glm", "SL.glm.interaction",
+            "custom.sl.rf")
+
+# superlearner with 10 V fold cross-validation on training set
+system.time({
+  sl_no2 = SuperLearner(Y = asthma_no2cut$no2_cut, 
+    X = test_covs, 
+    family = binomial(), SL.library = sl_lib, method = "method.AUC",
+    cvControl = list(V=2, stratifyCV=T, shuffle = T)) 
+})
+
+sl_no2
+```
+
+Running SuperLearner to predict NO~2~ with V of 2 (will change to 10)
+
+```{r sl_no2_eta}
+# predict on test
+g_pred <- predict(sl_no2, test_covs)
+
+# histogram of predicted values
+ggplot(data.frame(g_pred$pred), aes(x=g_pred$pred)) +
+  geom_density()
+
+# ugh ETA violations
+```
+
+
+```{r tmle_model}
+# sl lib
+sl_lib <- c("SL.glmnet", "SL.glm", "SL.glm.interaction")
+# tmle model
+tmle_mod <- tmle(Y = asthma_no2_df$edvisit, A = asthma_no2_df$no2_cut, 
+                 W = test_covs, 
+                 Q.SL.library = sl_lib, g.SL.library = sl_lib, 
+                 family = "binomial")
+# tmle output
+tmle_mod
+```
+
+
+```{r standard mod}
+# test mod
+test_mod <- glm(edvisit ~ no2_cut  + male + afra + enghome, 
+                data = asthma_no2_df)
+summary(test_mod)
+
+
+# test mod
+test_mod <- glm(edvisit ~ no2_cut , 
+                data = asthma_no2_df, family = "binomial"(link="logit"))
+summary(test_mod)
 ```

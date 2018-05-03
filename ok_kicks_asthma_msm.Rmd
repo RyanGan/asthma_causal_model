@@ -451,5 +451,14 @@ tmle_mod <- tmle(Y = asthma_no2_df$edvisit, A = asthma_no2_df$no2_cut,
                  Q.SL.library = sl_lib, g.SL.library = sl_lib, 
                  V = 10, family = "binomial")
 tmle_mod
+
+```
+
+Saving dataframe to analyze.
+
+```{r}
+readr::write_csv(asthma_no2_df, "./no2_asthma.csv")
+
+check <- asthma_no2_df[,106]
 ```
 
