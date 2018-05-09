@@ -454,11 +454,4 @@ tmle_mod
 
 ```
 
-Saving dataframe to analyze.
-
-```{r}
-readr::write_csv(asthma_no2_df, "./no2_asthma.csv")
-
-check <- asthma_no2_df[,106]
-```
 

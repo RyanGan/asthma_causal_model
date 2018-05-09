@@ -1,7 +1,9 @@
 ---
 title: "NO2 and asthma using TMLE"
-output: html_notebook
-editor_options: 
+output:
+  html_document:
+    df_print: paged
+editor_options:
   chunk_output_type: inline
 ---
 
@@ -12,26 +14,36 @@ NO2 is bad. We want to know if NO2 increases the likelihood of reporting an asth
 
 ## Research Question
 
-Aim: Utilize a MSM to determine the causal relation between residential proximity to freeway and asthma-related morbidity in children with asthma.
+Overall Aim: Compare and contrast causal inference statistical methods to standard regression and their utility in environmental epidmeiology studies.
+
+Standard Regression: Estimate the continous relationship between increasing yearly? average of NO~2~ and the likelihood of a reported ED visit in children with asthma. 
+
+Causal Inference: Estimate the marginal effect of a defined binary exposure and the likelihood of a reported ED visit in children with asthma under the counterfactual where everyone is exposed (Y=a1) and no one is expose (Y=a0).
 
 Study population: Cohort of school children with asthma living in Oakland, California.
 Outcome: Emergency room visit.
-Exposure: Living within 500 meters of a freeway.
+Exposure: NO~2~ exposure.
 
 ### Setup
 
 Loading libraries.
 
-```{r packages}
+```{r packages, message=F, warning=F, echo=F}
 library(tidyverse) # tidyverse 
-library(randomForest) # random forest
 library(glmnet) # lasso/elastic net
-library(tmle) # targeted maximum likelihood
+library(hdps) # high density propensity score algorithm
 library(SuperLearner) # superlearner ensemble algorightm
-library(caret) # caret ML processing
+library(tmle) # caret ML processing
+library(ctmle) # collaborative targeted maximum likelihood
+library(caret) # data prep for ml models
+
+# markdown options
+knitr::opts_chunk$set(fig.height = 6, fig.width = 8, fig.align = "center",
+                      progress = F, message = F, warning = F, echo=F,
+                      results = "asis")
 ```
 
-Preparing Oakland Kicks Asthma dataframe and joining with NO~2~ dataframe.
+Preparing Oakland Kicks Asthma dataframe and joining with NO~2~ data frame.
 
 ```{r read_data}
 # loading no2 value
@@ -41,9 +53,6 @@ no2layer <- haven::read_sas("./no2layer.sas7bdat") %>% # summary of NO2
   
 no2_col_names <- colnames(no2layer) %>% tolower() # lowercase all col names
 colnames(no2layer) <- no2_col_names # assign lowercase col names to df
-
-#head(no2layer) # check out the first 6 lines
-#glimpse(no2layer)
 
 # loading oakland working
 okawork <- haven::read_sas("./okawork1.sas7bdat") %>% 
@@ -57,28 +66,212 @@ asthma_no2_df <- okawork %>% right_join(no2layer, by = "okaid") %>%
                    ifelse(sh_11 == 2, 0, NA))) %>% 
   # filter out missing edvisits
   filter(!is.na(edvisit)) %>%
-  # old variables
-  # select(edvisit, asthma, inbuff, mfi_t, adengonly, eslgood, piprlt50,
-  # pctlata, ph75_100k, pctutilinc, pctotown, pctnofuel, kidspanengg, pkgt6sp1,
-  #        regcomm, commcomr, urbanres, no2) %>% 
   filter(asthma == 1) %>% 
+  filter(sexmiss == 0 & racemiss == 0 & homelmiss == 0) %>% 
   # create no2 distributions
-  mutate(no2_cut = ifelse(no2 >= 19, 1, 0),
-         no2_median = ifelse( no2 >= 17.197, 1, 0))
+  mutate(no2_10dec = ifelse(no2 >= 19.9, 1, 0),
+         no2_1qt = ifelse(no2 <= 16.237, 1, 0),
+         no2_2qt = ifelse(no2 > 16.237 & no2 <= 17.180, 1, 0),
+         no2_3qt = ifelse(no2 > 17.180 & no2 <= 18.090, 1, 0),
+         no2_4qt = ifelse(no2 >= 18.090, 1, 0),
+         no2_median = ifelse(no2 >= 17.180, 1, 0),
+         age = as.numeric(round((timentry - dob)/365,0)),
+         # imputate age based on grade
+         age = ifelse(age < 10 & grade == 6, 11,
+                  ifelse(is.na(age) & grade == 8, 14, age)))
 ```
 
-## Imputing missing covariates
+Set up custom color theme.
+
+```{r color_theme}
+ryan_theme <- theme(panel.background = element_rect(fill = "black", 
+          colour = "black", size = 0.5, linetype = "solid"),
+        panel.grid.major = element_line(size = 0.2, colour = "white"),
+        panel.grid.minor = element_line(size = 0.1, color = "white", 
+                                        linetype = "dotted"),
+        plot.background = element_rect(fill = "#141e30", colour="#141e30",
+                                       size = 0.5, linetype = "solid"),
+        text = element_text(colour = "white"),
+        axis.text = element_text(colour = "white"),
+        strip.background = element_blank(),
+        strip.text = element_text(colour="white"),
+        legend.background = element_blank(),
+        legend.key = element_blank())
+```
+
+## Study Population Description
+
+The Oakland Kicks Asthma study is a school-based study with n=4017 children.
+
+Our study population consists of 20% of these school-aged children (n=771) that have a diagnosis of asthma living in Oakland. Data were collected from (dates). 
+Our primary outcome is reported period prevalent emergency department visits in the past year *(Sheryl is this correct?)*. We'll evaluate some basic demographic characteristics of this population by reported emergency department visit.
+
+###Demographics by ED Visit 
+
+```{r demo_tab}
+# subset df to demographic variables
+demo <- asthma_no2_df %>% 
+  select(edvisit, age, grade, male, female, enghome, spanhome,
+         chnshome,viethome, olanghome,api, afra, latino, white, natam, 
+         mixed, othrace) %>% 
+  # change some vars to factors
+  mutate_at(vars(-age), as.factor) 
+
+# colname demographic vector except edvisit
+demo_vec <- colnames(demo)[c(-1,-2)]
+
+# age distribution 
+age_tab <- demo %>% 
+  group_by(edvisit) %>% 
+  summarise(mu_age = round(mean(age),1)) %>% 
+  mutate(var = "age_yr_mu",
+         edvisit = case_when(edvisit == 1 ~ 'yes_val',
+                             edvisit == 0 ~ 'no_val')) %>% 
+  spread(edvisit, mu_age)
+
+# n
+age_tab <- demo %>% 
+  group_by(edvisit) %>% 
+  summarise(n=n()) %>% 
+  mutate(var = "age_yr_mu",
+         edvisit = case_when(edvisit == 1 ~ 'ed_yes_n',
+                             edvisit == 0 ~ 'ed_no_n')) %>% 
+  spread(edvisit, n) %>% 
+  left_join(age_tab, by="var")
+
+# precent table
+prec_tab <- demo %>% 
+  select(-edvisit, -age) %>% 
+  map(~{as_tibble(round(prop.table(xtabs(~ .x + edvisit, data = demo),2)*100,
+                        1))}) %>% 
+  bind_rows(.id = "var") %>% 
+  mutate(edvisit = case_when(edvisit == 1 ~ 'yes_val',
+                             edvisit == 0 ~ 'no_val')) %>% 
+  spread(edvisit, n) %>% 
+  filter(.x == 1) %>% 
+  select(-.x)
+
+# n table
+n_tab <- demo %>% 
+  select(-edvisit, -age) %>% 
+  map(~{as_tibble(xtabs(~ .x + edvisit, data = demo))}) %>% 
+  bind_rows(.id = "var") %>% 
+  mutate(edvisit = case_when(edvisit == 1 ~ 'ed_yes_n',
+                             edvisit == 0 ~ 'ed_no_n')) %>% 
+  spread(edvisit, n) %>% 
+  filter(.x == 1) %>% 
+  select(-.x)
+
+# demo_tab
+demo_tab <- n_tab %>% 
+  left_join(prec_tab, by = "var") %>% 
+  bind_rows(age_tab, .)
+
+knitr::kable(demo_tab, 
+  caption = "Demographic characterstics by ED Visit (most vals are percent, expect age, which is mean")
+```
+
+Again, some missingness in variables. It would be good to have a conversaion on if we should impute these. I will probably need to transform the dummy variables to factor. 
+
+## NO~2~ Distribution
+
+Distribution of observed NO~2~ values.
+
+```{r no2_dist}
+no2_den_plot <- ggplot(asthma_no2_df, aes(x=no2)) +
+  geom_density(color = '#9cecfb', fill = '#9cecfb', alpha = 0.7) +
+  ylab("Density") +
+  xlab(expression(paste("NO"[2], " ", mu,"g/m"^3))) +
+  ryan_theme
+
+# print no2 density plot
+no2_den_plot
+```
+
+Assessing the relationship between NO~2~ and the proportion of ED visits by NO~2~ bins of 2 ug/m^3.
+
+```{r no2_bin}
+# checking linear relationship in p
+no2_bin_df <- asthma_no2_df %>% 
+  mutate(no2_bin = cut(no2, 
+    breaks = seq(8, 24, by = 2), labels = seq(9, 23, by = 2))) %>% 
+  group_by(no2_bin) %>% 
+  summarise(n=n(), n_ed = sum(edvisit)) %>% 
+  filter(!is.na(no2_bin)) %>% 
+  mutate(ed_p = n_ed/n,
+         no2 = as.numeric(as.character(no2_bin)))
+
+
+# smooth spline fit
+logit_smooth <- glm(edvisit ~ splines::ns(no2, 3), family = binomial(), 
+                    asthma_no2_df) 
+
+logit_lin <- glm(edvisit ~ no2, family = binomial(), asthma_no2_df) 
+
+# predict based on no2 estimate
+ns_ed <- predict(logit_smooth, data=asthma_no2_df, type = "response")
+# ns_ed 95% CI around fit
+ns_se <- predict(logit_smooth, data = asthma_no2_df, type = "response",
+                      se.fit = T)$se.fit
+# upper95 and lower95
+ns_upper95 <- (ns_ed + 1.96*ns_se)
+ns_lower95 <- (ns_ed - 1.96*ns_se)
+
+# linear predictor
+lin_ed <- predict(logit_lin, data = asthma_no2_df, type = "response")
+# linear se
+lin_se <- predict(logit_lin, data = asthma_no2_df, type = "response",
+                      se.fit = T)$se.fit
+# upper95 and lower95
+lin_upper95 <- (lin_ed + 1.96*lin_se)
+lin_lower95 <- (lin_ed - 1.96*lin_se)
+
+# no2 vector
+no2 <- asthma_no2_df$no2
+# no2 ns spline
+ed_ns_df <- data.frame(ns_ed, ns_lower95, ns_upper95, no2) %>% 
+  rename(pr_ed = ns_ed, lower95 = ns_lower95, upper95 = ns_upper95) %>% 
+  mutate(Fit = paste0("Spline (AIC: ", round(AIC(logit_smooth),1), ")"))
+
+# lin fit
+ed_lin_df <- data.frame(lin_ed, lin_lower95, lin_upper95, no2) %>% 
+  rename(pr_ed = lin_ed, lower95 = lin_lower95, upper95 = lin_upper95) %>% 
+  mutate(Fit = paste0("Linear (AIC: ", round(AIC(logit_lin),1), ")"))
+
+# fit df
+pr_ed_df <- bind_rows(ed_ns_df, ed_lin_df)
+
+# plot of deciles by no2
+fit_plot <- ggplot() +
+  geom_point(data = no2_bin_df, aes(x = no2, y = ed_p), color = '#f2fcfe') +
+  geom_line(data = pr_ed_df, aes(x=no2, y=pr_ed, group = Fit, color = Fit)) +
+  geom_ribbon(data = pr_ed_df, aes(x=no2, ymin=lower95, ymax=upper95, 
+                                   group = Fit, fill = Fit), alpha = 0.5) +
+  scale_color_manual(values = c('#1c92d2', '#e100ff')) +
+  scale_fill_manual(values = c('#1c92d2', '#e100ff')) +
+  facet_wrap(~Fit) +
+  ylab("Proportion of Emergency Department Visits") +
+  xlab(expression(paste("Mean of NO"[2], " ", mu,"g/m"^3, " Bin"))) +
+  ryan_theme +
+  theme(legend.direction = "horizontal", legend.position = "bottom")
+
+# print fit plot
+fit_plot
+```
+
+Fit by AIC suggests that for a logit model, a linear fit is just as good a fit as splines I've tested (I tried 2 knots and 3 knots but only showing 3 knot spline). I think it's fine to leave continous NO2 as a linear predictor
 
 ## Potential Confounders
 
-There are over 437 variables. I beleive Sheryl had identified confounders for the living <500 meters of a roadway, but it's likely the potential confounders between NO~2~ cutoffs are different to the buffer, and perhaps even continous NO~2~. Individual schools are dummy-coded in so I'm going to take out the school id variable.
+There are over 437 variables. I beleive Sheryl had identified confounders for the living < 500 meters of a roadway, but it's likely the potential confounders between NO~2~ cutoffs are different to the buffer, and perhaps even continous NO~2~. Individual schools are dummy-coded in so I'm going to take out the school id variable.
 
 ```{r possible_covs}
 # subset to possible covariates based off sheryl's list
 all_covs <- asthma_no2_df %>% 
-  select(male, enghome:olanghome, api:othrace, pubhouse,
+  select(inbuff, male, enghome:olanghome, api:othrace, pubhouse,
          assthouse, hillres:estuary, pwhite:pinst, pmchhwoc:pimmb80nc,
-         psamehome95:pworkmom, pmomnlf:urban) 
+         psamehome95:pworkmom, pmomnlf:urban) %>% 
+  rename_all(funs(str_replace(., "_", ".")))
 
 # nearzero variance of possible covs
 nzv <- nearZeroVar(all_covs)
@@ -88,148 +281,391 @@ covs_w_var <- all_covs[, -nzv]
 
 # create covariance matrix using non-parametric spearman to find vars with high
 # correlation
-corr_mat <- cor(covs_w_var, method = "spearman", 
-                use = "pairwise.complete.obs")
+corr_mat <- cor(covs_w_var, method = "spearman")
 
 # find highly correlated predictors
 high_cor <- findCorrelation(corr_mat, cutoff = 0.9)  
 
 # filter to variables with lower correlation than 0.8
 possible_covs <- covs_w_var[,-high_cor] 
-# reduced to 273 to 226
-
-# no2 cut
-no2_cut <- asthma_no2_df$no2_cut
-#no2 median
-no2_med <- asthma_no2_df$no2_median
-# asthma ed visit
-edvisit <- asthma_no2_df$edvisit
-
-# create dataframe to save to use with ctmle julia package
-asthma_no2_julia <- data.frame(edvisit, no2_cut, no2_med, possible_covs)
-
+# reduced to 273 to 225
 ```
 
-Starting out with a random forest to predict NO~2~ cutoff of 19.
+### High-Density Propensity Score
 
-```{r no2_rf}
-# no2 randomforest model
-no2_rf <- randomForest(as.factor(no2_cut) ~ ., data = possible_covs,
-                       importance = T, ntree = 500)
-# variable importance plot
-varImpPlot(no2_rf)
-```
+I'm using the high-density propensity score algorigthm to further reduce the dimensions of covariates to only the 5 most influential. I like the high-density propensity score because it considers the relationship between both exposure and outcomes, and the possibility of that covariate for confounding. As we have many questionnaire covariates, environmental covariates, and census demographic covariates, I like this data reduction approach instead of building models piece by piece.
 
-Random forest to predict ED visit.
+For simplicity, I'm going to fit the HDPS model based on the binary cutoff of NO~2~ at the upper decline of the NO~2~ distribution, which is a value of 19.9 ug/m^3^. It looks like this will work based on the fit plots below. It also gives us the counterfactual question:
 
-```{r asthma_rf}
-# asthma randomforest model
-edvisit_rf <- randomForest(as.factor(edvisit) ~ ., data = possible_covs,
-                       importance = T, ntree = 500)
-# variance importance plot
-varImpPlot(edvisit_rf)
-```
+What would the reported proportion of ED visits be in children with asthma if neighborhood NO~2~ were reduced below 19.9 ug/m^3^?
 
-## Cross-Validated SuperLearner Model
+```{r hdps}
+# trying out hdps to reduce to 50 vars
+# step 2,3,4: identify covariates associated with treatment and outcome
+hdps_vars <- hdps_screen(outcome = asthma_no2_df$edvisit, 
+                         treatment = asthma_no2_df$no2_10dec,
+                         covars = possible_covs, keep_n_per_dimension = 5,
+                         keep_k_total = 10, verbose = T)
 
-I'm going to take the top 20 variables of importance from the random forests for the ED visit random forest. I don't want to over-predict the NO~2~ exposure to avoid an ETA violation. 
+# output vector of covariates identified by HDS
+hdps_vars_vec <- predict(hdps_vars) %>% 
+  colnames() %>% 
+  str_replace(., "_.*", "") %>% 
+  unique()
 
-I am also not using training/validation sets anymore to build model since I'm less concerned about the models ability to predict on other data, and more concerned about how well it predicts on the data we have.
-
-To figure out workflow, I want to subset the 300 some potential covariates to a more manageable size that will run on my local machine before I scale up to a computing cluster. Starting out by finding the 20 variables most important at predicting ED visit.
-
-```{r imp_vars}
-# finding the variable names of the most important 20 at prediciting ed visit
-ed_imp_mat <- data.frame(edvisit_rf$importance)
+# subset covariates to hdps_vars_vec
+hdps_vars_df <- possible_covs[, colnames(possible_covs) %in% hdps_vars_vec]
 # names
-ed_imp_mat$var <- rownames(ed_imp_mat) 
-# sort and extract first 20
-ed_imp_var <- ed_imp_mat %>% 
-  arrange(desc(MeanDecreaseGini)) %>% 
-  filter(MeanDecreaseGini > 1) 
-
-# test covariates
-test_covs <- possible_covs[, ed_imp_var$var]
-# final dataframe to analyze
-asthma_no2cut <- cbind(edvisit, no2_cut, test_covs) 
+#print(colnames(hdps_vars_df))
 ```
 
-Using lasso/elastic net regression to reduce one more time to avoid variables that may result in ETA violation.
-```{r no2_lasso}
-# last reduction step, finding variables most predictive of ed visit using
-# predictive asthma to make sure I don't have covariates that would cause and 
-# ETA violation
-head(test_covs)
-# bind back in no2 cut and edvisit to covariates 
-no2_lasso <- glmnet(y=as.factor(no2_cut), x=as.matrix(test_covs), 
-                 alpha=1, family="binomial")
-# plot (some variable is wonky)
-plot(no2_lasso)
-# coeff
-coef(no2_lasso)[,10]
+The HDPS identified the following potential confounders: 
+
+Subject-specific binary idicators of male, African American, and resident of a mixed housing land use area. 
+
+Census-level variables percentage of children in census block? that speak Asian or Pacific Islander language, but not English well. Also, percentage American Indian, Native American of Latino population by census tract.
+
+I will include these in adjusted models. Note, I realize that what might confounded the binary cutoff of NO~2~ may be different from continous NO~2~. I have not spent time identifying variables that may predict continous NO~2~. This is a limitation, but I think it's minor.  
+
+## Standard Models
+
+### Continous Relationship
+
+Linear model fits these data just as well as a spline with 3 degrees of freedom.I'm going to estimate the linear relationship between a 1 ug/m^3^ increase in NO~2~ and the proportion/likelihood of reporting an asthma ED visit using both the identity link (difference in proportion) and the log link (relative difference in proportion).
+
+```{r unadjusted_lin_relationships}
+# unadjusted linear model
+unadj_diff <- broom::tidy(glm(edvisit ~ no2, data=asthma_no2_df, 
+             family = binomial(link="identity"))) %>% 
+  filter(term == "no2") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Difference",
+         Y = "ED Visit",
+         A = "NO2 continous",
+         W = "Unadjusted",
+         lower95 = round(estimate - 1.96*std.error,3),
+         upper95 = round(estimate + 1.96*std.error,3),
+         estimate = round(estimate, 3)) %>% 
+  select(model, type, Y, A, W, estimate, lower95, upper95)
+
+# relative
+# unadjusted linear model
+unadj_or <- broom::tidy(glm(edvisit ~ no2, data=asthma_no2_df, 
+             family = binomial(link="log"))) %>% 
+  filter(term == "no2") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Odds Ratio",
+         covariate = 'Unadjusted',
+         Y = "ED Visit",
+         A = "NO2 continous",
+         W = "Unadjusted",
+         lower95 = round(exp(estimate - 1.96*std.error),3),
+         upper95 = round(exp(estimate + 1.96*std.error),3),
+         estimate = round(exp(estimate), 3)) %>% 
+  select(model, type, Y, A , W, estimate, lower95, upper95)
+
+# table
+knitr::kable(bind_rows(unadj_diff, unadj_or), 
+  caption = 'Unadjusted linear relationship between NO2 and ED Visits')
 ```
 
-Detached residence is highly predictive in being less-likely to be exposed to NO~2~ cutoff.
+Adjusted models adjusting for HDPS covariates. Note, I should really consider itteratiting for each model scenario.
 
-Setting SuperLearner Libraries to use. I think I'll start with glm, step, interaction, glmnet. Note, I think using random forest is too good at classifying the likelihood of an event/exposure, and can induce ETA violations.
+```{r adj_linear_relationship}
+# adjusted linear model
+adj_diff <- broom::tidy(glm(edvisit ~ no2 + male + afra + mixhouse + 
+                              pctlataian0 + kidasnengn, data=asthma_no2_df, 
+             family = binomial(link="identity"))) %>% 
+  filter(term == "no2") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Difference",
+         Y = "ED Visit",
+         A = "NO2 continous",
+         W = "HDPS",
+         lower95 = round(estimate - 1.96*std.error,3),
+         upper95 = round(estimate + 1.96*std.error,3),
+         estimate = round(estimate, 3)) %>% 
+  select(model, type, Y, A, W, estimate, lower95, upper95)
 
-```{r superlearner_no2}
-# reducing tree size to 500
-custom.sl.rf <- function(...) {
-  SL.randomForest(..., ntree = 500)
-}
+# adjusted linear model
+adj_or <- broom::tidy(glm(edvisit ~ no2 + male + afra + mixhouse + 
+            pctlataian0 + kidasnengn, data=asthma_no2_df, 
+            family = binomial(link="log"))) %>% 
+  filter(term == "no2") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Odds Ratio",
+         covariate = 'Unadjusted',
+         Y = "ED Visit",
+         A = "NO2 continous",
+         W = "HDPS",
+         lower95 = round(exp(estimate - 1.96*std.error),3),
+         upper95 = round(exp(estimate + 1.96*std.error),3),
+         estimate = round(exp(estimate), 3)) %>% 
+  select(model, type, Y, A , W, estimate, lower95, upper95)
 
-# superlearner library reduced library
-sl_lib <- c("SL.glmnet", "SL.glm", "SL.glm.interaction",
-            "custom.sl.rf")
-
-# superlearner with 10 V fold cross-validation on training set
-system.time({
-  sl_no2 = SuperLearner(Y = asthma_no2cut$no2_cut, 
-    X = test_covs, 
-    family = binomial(), SL.library = sl_lib, method = "method.AUC",
-    cvControl = list(V=2, stratifyCV=T, shuffle = T)) 
-})
-
-sl_no2
+# table
+knitr::kable(bind_rows(adj_diff, adj_or), 
+  caption = 'Adjusted linear relationship between NO2 and ED Visits')
 ```
 
-Running SuperLearner to predict NO~2~ with V of 2 (will change to 10)
+Adjusted variables differ very little from crude estimates.
 
-```{r sl_no2_eta}
-# predict on test
-g_pred <- predict(sl_no2, test_covs)
+### Binary Cutoff
 
-# histogram of predicted values
-ggplot(data.frame(g_pred$pred), aes(x=g_pred$pred)) +
-  geom_density()
+Causal inference models like Targeted Maximum Likelihood (TMLE) generally require a binary point exposure, although there are exceptions when the relationship between A and Y is linear (g-estimation, structural equations modeling). I do believe there are extensions of TMLE now for a bounded continous A variable, but I have not really looked in to these methods yet.
 
-# ugh ETA violations
+```{r adj_linear_relationship_binary}
+# adjusted linear model
+adj_diff_binary <- broom::tidy(glm(edvisit ~ no2_10dec + male + afra + mixhouse + 
+                              pctlataian0 + kidasnengn, data=asthma_no2_df, 
+             family = binomial(link="identity"))) %>% 
+  filter(term == "no2_10dec") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Difference",
+         Y = "ED Visit",
+         A = "NO2 > 19.9",
+         W = "HDPS",
+         lower95 = round(estimate - 1.96*std.error,3),
+         upper95 = round(estimate + 1.96*std.error,3),
+         estimate = round(estimate, 3)) %>% 
+  select(model, type, Y, A, W, estimate, lower95, upper95)
+
+# unjusted linear model
+unadj_or_binary <- broom::tidy(glm(edvisit ~ no2_10dec, data=asthma_no2_df, 
+            family = binomial(link="log"))) %>% 
+  filter(term == "no2_10dec") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Odds Ratio",
+         covariate = 'Unadjusted',
+         Y = "ED Visit",
+         A = "NO2 > 19.9",
+         W = "Unadjusted",
+         lower95 = round(exp(estimate - 1.96*std.error),3),
+         upper95 = round(exp(estimate + 1.96*std.error),3),
+         estimate = round(exp(estimate), 3)) %>% 
+  select(model, type, Y, A , W, estimate, lower95, upper95)
+
+# adjusted linear model
+adj_or_binary <- broom::tidy(glm(edvisit ~ no2_10dec + male + afra + mixhouse + 
+            pctlataian0 + kidasnengn, data=asthma_no2_df, 
+            family = binomial(link="log"))) %>% 
+  filter(term == "no2_10dec") %>% 
+  select(estimate, std.error) %>% 
+  mutate(model = 'Logistic',
+         type = "Odds Ratio",
+         covariate = 'HDPS',
+         Y = "ED Visit",
+         A = "NO2 > 19.9",
+         W = "HDPS",
+         lower95 = round(exp(estimate - 1.96*std.error),3),
+         upper95 = round(exp(estimate + 1.96*std.error),3),
+         estimate = round(exp(estimate), 3)) %>% 
+  select(model, type, Y, A , W, estimate, lower95, upper95)
+
+# table
+knitr::kable(bind_rows(unadj_or_binary, adj_or_binary), 
+  caption = 'Adjusted relationship between NO2 >19.9 and ED Visits')
 ```
 
+## Targeted Maximum Likelihood Estimation
+
+Using TMLE to estimate the marginal effect of reducing NO~2~ levels below 19.9 on reported ED visit.
+
+Setting up counterfactual estimates of Q formula. The following code chunk is for collaborative TMLE, but I don't think I'll go that route since I've reduced the dimensions of possible covariates to 5 now.
+
+```{r scalable_ctmle}
+# lenght of observations
+n <- length(asthma_no2_df$edvisit)
+# observed Y
+Y <- asthma_no2_df$edvisit
+# observed X
+A <- asthma_no2_df$no2_10dec
+# covariates
+W <- as.matrix(hdps_vars_df)
+# start by building initial estimate of Q
+# counterfactual estimate of Y given all exposure is 0
+Ya0 <- rep(mean(Y[A == 0]),n)
+# counterfactual estimate of Y given all exposure is 1
+Ya1 <- rep(mean(Y[A == 1]),n)
+# assign initial estimate of Q e
+Q <- cbind(Ya0, Ya1)
+```
+
+
+Running a standard TMLE model.
 
 ```{r tmle_model}
 # sl lib
-sl_lib <- c("SL.glmnet", "SL.glm", "SL.glm.interaction")
+sl_lib <- c("SL.glmnet", "SL.glm", "SL.step")
 # tmle model
-tmle_mod <- tmle(Y = asthma_no2_df$edvisit, A = asthma_no2_df$no2_cut, 
-                 W = test_covs, 
+tmle_mod <- tmle(Y = Y, A = A, W = W, 
                  Q.SL.library = sl_lib, g.SL.library = sl_lib, 
-                 family = "binomial")
-# tmle output
+                 family = "binomial", V = 10)
+```
+
+Checking propensity of NO~2~ exposure from TMLE model for ETA violation. Looks like we are okay.
+
+```{r tmle_g_eta}
+# predict on test
+g_pred <- as_data_frame(tmle_mod$g$g1W) %>% 
+  rename(g = value)
+
+# histogram of predicted values
+eta_plot <- ggplot(data.frame(g_pred), aes(x=g)) +
+  geom_density(fill = "#bdfff3", color = "#bdfff3", alpha = 0.5) +
+  xlim(0, 1) +
+  ylab('Density') +
+  xlab(expression(paste("Probability of NO"[2], " >19.9 ", mu,"g/m"^3, " | W"))) +
+  ryan_theme
+# print eta plot
+eta_plot
+```
+
+TMLE Estimates.
+
+```{r tmle_est}
 tmle_mod
 ```
 
 
-```{r standard mod}
-# test mod
-test_mod <- glm(edvisit ~ no2_cut  + male + afra + enghome, 
-                data = asthma_no2_df)
-summary(test_mod)
+## Collaborative TMLE
 
+I've run this, but it won't improve on TMLE since I've reduce variables to only 5 and made sure they balance the propensity. Consider coming back to this with more dimensions for the paper.
 
-# test mod
-test_mod <- glm(edvisit ~ no2_cut , 
-                data = asthma_no2_df, family = "binomial"(link="logit"))
-summary(test_mod)
+Building initial lasso fit of g formula.
+
+```{r g_form}
+# lasso fit
+lasso_fit <- cv.glmnet(y=A, x=W, family = "binomial", nlambda =100, 
+                       nfolds = 5)
 ```
+
+Build sequence of lmabdas from lambda selected by CV.
+```{r lasso_lambdas}
+lasso_lambdas <- lasso_fit$lambda[lasso_fit$lambda <=
+                                  lasso_fit$lambda.min][1:10]
+```
+
+Custom lasso superlearner library.
+
+```{r sl_lasso_template}
+# Build SL template for glmnet
+SL.glmnet_new <- function(Y, X, newX, family, obsWeights, id, alpha = 1,
+                           nlambda = 100, lambda = 0,...){
+      # browser()
+      if (!is.matrix(X)) {
+            X <- model.matrix(~-1 + ., X)
+            newX <- model.matrix(~-1 + ., newX)
+      }
+      fit <- glmnet::glmnet(x = X, y = Y,
+                            lambda = lambda,
+                            family = family$family, alpha = alpha)
+      pred <- predict(fit, newx = newX, type = "response")
+      fit <- list(object = fit)
+      class(fit) <- "SL.glmnet"
+      out <- list(pred = pred, fit = fit)
+      return(out)
+}
+
+# Use a sequence of estimator to build gn sequence:
+SL.cv1lasso <- function (... , alpha = 1, lambda = lasso_lambdas[1]){
+      SL.glmnet_new(... , alpha = alpha, lambda = lambda)
+}
+
+SL.cv2lasso <- function (... , alpha = 1, lambda = lasso_lambdas[2]){
+      SL.glmnet_new(... , alpha = alpha, lambda = lambda)
+}
+
+SL.cv3lasso <- function (... , alpha = 1, lambda = lasso_lambdas[3]){
+      SL.glmnet_new(... , alpha = alpha, lambda = lambda)
+}
+
+SL.cv4lasso <- function (... , alpha = 1, lambda = lasso_lambdas[4]){
+      SL.glmnet_new(... , alpha = alpha, lambda = lambda)
+}
+
+SL.library = c('SL.cv1lasso', 'SL.cv2lasso', 'SL.cv3lasso', 'SL.cv4lasso', 'SL.glm')
+```
+
+Construct the object folds, which is a list of indices for each fold.
+
+```{r lasso_folds}
+V = 5
+folds <- by(sample(1:n,n), rep(1:V, length=n), list)
+```
+
+Use folds and SuperLearner template to compute gn_candidates and gn_candidates_cv.
+
+```{r gn_seq}
+gn_seq <- build_gn_seq(A = A, W = W, SL.library = SL.library, folds = folds)
+```
+
+C-TMLE only has difference estiamtes right now. I looked at the function and believe I can modify it if we decided to estimate the ratio.
+
+```{r ctmle_fit}
+# run ctmle model
+ctmle_general_fit1 <- ctmleGeneral(Y = Y, A = A, W = W, Q = Q,
+                                   ctmletype = 1, family = "binomial",
+                                   gn_candidates = gn_seq$gn_candidates,
+                                   gn_candidates_cv = gn_seq$gn_candidates_cv,
+                                   folds = folds, V = 5)
+# print fit
+ctmle_general_fit1
+```
+
+## Comparison of Binary Estimates Using Standard Model vs. TMLE
+
+```{r results_tab}
+# tmle_results
+tmle_or <- round(tmle_mod$estimates$OR$psi,3)
+tmle_lower95 <- round(tmle_mod$estimates$OR$CI, 3)[1]
+tmle_upper95 <- round(tmle_mod$estimates$OR$CI, 3)[2]
+
+# tmle_results 
+tmle_results <- data.frame(tmle_or, tmle_lower95, tmle_upper95) %>% 
+  rename(estimate = tmle_or, lower95 = tmle_lower95, upper95 = tmle_upper95) %>% 
+  mutate(model = "TMLE", type = "Odds Ratio", Y = "ED Visit", A = "NO2 > 19.9",
+         W = "HDPS")
+
+relative_results <- bind_rows(unadj_or_binary, adj_or_binary, tmle_results) %>% 
+  mutate(Model = paste0(model, ": ", W))
+
+# table
+knitr::kable(relative_results, 
+  caption = 'Results for different models between NO2 >19.9 and ED Visits')
+```
+
+Plot of same results.
+
+```{r results_plot}
+# results plot
+results_plot <- ggplot(data = relative_results, aes(x = Model, y = estimate,
+                                                    color = model, group = model)) +
+  geom_point() +
+  geom_errorbar(aes(ymin=lower95, ymax=upper95), width = 0.3) +
+  scale_color_manual("Model Type", values = c("#9cecfb", "#ff00cc")) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "red") +
+  ylim(0.8, 4) +
+  ylab(expression(paste("Odds Ratio: NO"[2], " > 19.9 ", mu,"g/m"^3, 
+                        " (Yes vs. No)"))) +
+  xlab("Model") +
+  ryan_theme +
+  theme(panel.grid.major.x = element_blank(),
+        panel.grid.major.y = element_line(linetype = "dotted"),
+        panel.grid.minor = element_blank(),
+        legend.direction = "horizontal", legend.position = "bottom")
+# print results
+results_plot
+```
+
+## Conclusion
+
+We implemented a standard and causal inference framework to assess the relationship between NO2 and ED visits and found strengths and limitations to both approaches. The standard modeling approach allowed us to evaluate the concentration-response relationship between the exposure and outcome, but these results are harder to translate in to actionable policy or public health decisions. In contrast, results from our TMLE formalizes our counterfactual question on the population effect if we reduced NO2 below 19.9 µg/m^3^. However, this association cannot be interpreted causally due to violations in conditional exchangeability and the cross-sectional nature of NO~2~ assessment and reported ED visits.
+
+I just copied this statement from the abstract. I will write some more stuff.
