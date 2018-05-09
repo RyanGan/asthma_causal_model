@@ -13,3 +13,5 @@
 *.docx
 
 *.csv
+
+.ipynb_checkopints/
