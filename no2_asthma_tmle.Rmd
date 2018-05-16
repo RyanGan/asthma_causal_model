@@ -199,8 +199,8 @@ no2_bin_df <- asthma_no2_df %>%
   summarise(n=n(), n_ed = sum(edvisit)) %>% 
   filter(!is.na(no2_bin)) %>% 
   mutate(ed_p = n_ed/n,
-         no2 = as.numeric(as.character(no2_bin)))
-
+         no2 = as.numeric(as.character(no2_bin)),
+         bin_size = log(n)/2)
 
 # smooth spline fit
 logit_smooth <- glm(edvisit ~ splines::ns(no2, 3), family = binomial(), 
@@ -243,10 +243,12 @@ pr_ed_df <- bind_rows(ed_ns_df, ed_lin_df)
 
 # plot of deciles by no2
 fit_plot <- ggplot() +
-  geom_point(data = no2_bin_df, aes(x = no2, y = ed_p), color = '#f2fcfe') +
+  geom_point(data = no2_bin_df, aes(x = no2, y = ed_p, size = bin_size), 
+             color = '#f2fcfe') +
   geom_line(data = pr_ed_df, aes(x=no2, y=pr_ed, group = Fit, color = Fit)) +
   geom_ribbon(data = pr_ed_df, aes(x=no2, ymin=lower95, ymax=upper95, 
                                    group = Fit, fill = Fit), alpha = 0.5) +
+  scale_size(guide = F) +
   scale_color_manual(values = c('#1c92d2', '#e100ff')) +
   scale_fill_manual(values = c('#1c92d2', '#e100ff')) +
   facet_wrap(~Fit) +
@@ -257,6 +259,8 @@ fit_plot <- ggplot() +
 
 # print fit plot
 fit_plot
+# save plot
+ggsave(filename = "fit_plot.png", fit_plot, width = 6, height = 3)
 ```
 
 Fit by AIC suggests that for a logit model, a linear fit is just as good a fit as splines I've tested (I tried 2 knots and 3 knots but only showing 3 knot spline). I think it's fine to leave continous NO2 as a linear predictor
@@ -525,6 +529,8 @@ eta_plot <- ggplot(data.frame(g_pred), aes(x=g)) +
   ryan_theme
 # print eta plot
 eta_plot
+# save plot
+ggsave(filename = "eta_plot.png", eta_plot, width = 6, height = 3)
 ```
 
 TMLE Estimates.
@@ -634,7 +640,8 @@ tmle_results <- data.frame(tmle_or, tmle_lower95, tmle_upper95) %>%
          W = "HDPS")
 
 relative_results <- bind_rows(unadj_or_binary, adj_or_binary, tmle_results) %>% 
-  mutate(Model = paste0(model, ": ", W))
+  mutate(Model = factor(paste0(model, ": ", W), 
+    levels = c("Logistic: Unadjusted", "Logistic: HDPS", "TMLE: HDPS")))
 
 # table
 knitr::kable(relative_results, 
@@ -654,14 +661,16 @@ results_plot <- ggplot(data = relative_results, aes(x = Model, y = estimate,
   ylim(0.8, 4) +
   ylab(expression(paste("Odds Ratio: NO"[2], " > 19.9 ", mu,"g/m"^3, 
                         " (Yes vs. No)"))) +
-  xlab("Model") +
   ryan_theme +
-  theme(panel.grid.major.x = element_blank(),
+  theme(axis.title.x = element_blank(),
+        panel.grid.major.x = element_blank(),
         panel.grid.major.y = element_line(linetype = "dotted"),
         panel.grid.minor = element_blank(),
         legend.direction = "horizontal", legend.position = "bottom")
 # print results
 results_plot
+# save plot
+ggsave(filename = "result_plot.png", results_plot, width = 6, height = 3)
 ```
 
 ## Conclusion
