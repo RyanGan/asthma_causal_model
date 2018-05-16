@@ -252,7 +252,7 @@ fit_plot <- ggplot() +
   scale_color_manual(values = c('#1c92d2', '#e100ff')) +
   scale_fill_manual(values = c('#1c92d2', '#e100ff')) +
   facet_wrap(~Fit) +
-  ylab("Proportion of Emergency Department Visits") +
+  ylab("Proportion of Emergency \nDepartment Visits") +
   xlab(expression(paste("Mean of NO"[2], " ", mu,"g/m"^3, " Bin"))) +
   ryan_theme +
   theme(legend.direction = "horizontal", legend.position = "bottom")
@@ -654,13 +654,12 @@ Plot of same results.
 # results plot
 results_plot <- ggplot(data = relative_results, aes(x = Model, y = estimate,
                                                     color = model, group = model)) +
-  geom_point() +
-  geom_errorbar(aes(ymin=lower95, ymax=upper95), width = 0.3) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin=lower95, ymax=upper95), width = 0.2) +
   scale_color_manual("Model Type", values = c("#9cecfb", "#ff00cc")) +
   geom_hline(yintercept = 1, linetype = "dashed", colour = "red") +
   ylim(0.8, 4) +
-  ylab(expression(paste("Odds Ratio: NO"[2], " > 19.9 ", mu,"g/m"^3, 
-                        " (Yes vs. No)"))) +
+  ylab(expression(paste("Odds Ratio: NO"[2], " > 19.9 ", mu,"g/m"^3))) +
   ryan_theme +
   theme(axis.title.x = element_blank(),
         panel.grid.major.x = element_blank(),
