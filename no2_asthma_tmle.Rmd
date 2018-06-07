@@ -113,9 +113,10 @@ Our primary outcome is reported period prevalent emergency department visits in 
 demo <- asthma_no2_df %>% 
   select(edvisit, age, grade, male, female, enghome, spanhome,
          chnshome,viethome, olanghome,api, afra, latino, white, natam, 
-         mixed, othrace) %>% 
+         mixed, othrace, mixhouse, pctlataian0, kidasnengn) %>% 
   # change some vars to factors
-  mutate_at(vars(-age), as.factor) 
+  mutate_at(vars(-age, - pctlataian0, -kidasnengn), as.factor) 
+
 
 # colname demographic vector except edvisit
 demo_vec <- colnames(demo)[c(-1,-2)]
@@ -128,6 +129,12 @@ age_tab <- demo %>%
          edvisit = case_when(edvisit == 1 ~ 'yes_val',
                              edvisit == 0 ~ 'no_val')) %>% 
   spread(edvisit, mu_age)
+
+# pctlataian and kidasn
+cont_tab <- demo %>% 
+  group_by(edvisit) %>% 
+  summarise(mu_lat = mean(pctlataian0), med_lat = median(pctlataian0),
+            mu_kidasnengn = mean(kidasnengn), med_kidasnengn = median(kidasnengn))
 
 # n
 age_tab <- demo %>% 
@@ -260,7 +267,7 @@ fit_plot <- ggplot() +
 # print fit plot
 fit_plot
 # save plot
-ggsave(filename = "fit_plot.png", fit_plot, width = 6, height = 3)
+#ggsave(filename = "fit_plot.png", fit_plot, width = 6, height = 3)
 ```
 
 Fit by AIC suggests that for a logit model, a linear fit is just as good a fit as splines I've tested (I tried 2 knots and 3 knots but only showing 3 knot spline). I think it's fine to leave continous NO2 as a linear predictor
